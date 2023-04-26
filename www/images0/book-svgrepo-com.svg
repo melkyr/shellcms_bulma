@@ -1,0 +1,26 @@
+<?xml version="1.0" encoding="utf-8"?>
+<!-- Uploaded to: SVG Repo, www.svgrepo.com, Generator: SVG Repo Mixer Tools -->
+<svg width="800px" height="800px" viewBox="0 0 24 24" xmlns="http://www.w3.org/2000/svg" xmlns:xlink="http://www.w3.org/1999/xlink">
+  <defs>
+    <path id="book-a" d="M0,0 L2,0 L2,17 L0,17 L0,0 Z M8,2 L13,2 L13,7 L8,7 L8,2 Z"/>
+    <path id="book-c" d="M4,1.9047619 C4,1.4050757 4.44771525,1 5,1 C5.55228475,1 6,1.4050757 6,1.9047619 L6,19.0952381 C6,19.5949243 5.55228475,20 5,20 C4.44771525,20 4,19.5949243 4,19.0952381 L4,1.9047619 Z M16,3.93641057 C16.0013195,3.95743741 16.0019891,3.9786405 16.0019891,4 L16.0019891,9 C16.0019891,9.0213595 16.0013195,9.04256259 16,9.06358943 L16,19 C16,20.1045695 15.1045695,21 14,21 L2,21 C0.8954305,21 0,20.1045695 0,19 L0,2 C0,0.8954305 0.8954305,0 2,0 L14,0 C15.1045695,0 16,0.8954305 16,2 L16,3.93641057 Z M14,3 L14,2 L2,2 L2,19 L14,19 L14,10 L8.00198915,10 C7.06385264,10 6.64208667,8.82459947 7.36619702,8.22813967 L9.4641822,6.5 L7.36619702,4.77186033 C6.64208667,4.17540053 7.06385264,3 8.00198915,3 L14,3 Z M10.7888439,5 L11.6728155,5.72813967 C12.158426,6.12814381 12.158426,6.87185619 11.6728155,7.27186033 L10.7888439,8 L14.0019891,8 L14.0019891,5 L10.7888439,5 Z"/>
+  </defs>
+  <g fill="none" fill-rule="evenodd" transform="translate(4 1)">
+    <g transform="translate(2 2)">
+      <mask id="book-b" fill="#ffffff">
+        <use xlink:href="#book-a"/>
+      </mask>
+      <use fill="#D8D8D8" xlink:href="#book-a"/>
+      <g fill="#FFA0A0" mask="url(#book-b)">
+        <rect width="24" height="24" transform="translate(-6 -3)"/>
+      </g>
+    </g>
+    <mask id="book-d" fill="#ffffff">
+      <use xlink:href="#book-c"/>
+    </mask>
+    <use fill="#000000" fill-rule="nonzero" xlink:href="#book-c"/>
+    <g fill="#7600FF" mask="url(#book-d)">
+      <rect width="24" height="24" transform="translate(-4 -1)"/>
+    </g>
+  </g>
+</svg>

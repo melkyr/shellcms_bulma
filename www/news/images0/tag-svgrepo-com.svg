@@ -1,0 +1,26 @@
+<?xml version="1.0" encoding="utf-8"?>
+<!-- Uploaded to: SVG Repo, www.svgrepo.com, Generator: SVG Repo Mixer Tools -->
+<svg width="800px" height="800px" viewBox="0 0 24 24" xmlns="http://www.w3.org/2000/svg" xmlns:xlink="http://www.w3.org/1999/xlink">
+  <defs>
+    <polygon id="tag-a" points="5.072 .96 14.154 10.229 9.762 14.346 .714 5.203"/>
+    <path id="tag-c" d="M10.000338,2 L2.00033799,2.00000718 L2.00033799,10 L12.2221634,20.0312301 L20.000338,12.2530555 L10.000338,2 Z M11.30314,0.72743042 L21.4145516,10.8388419 C22.1956001,11.6198905 22.1956001,12.8862205 21.4145516,13.6672691 L13.636377,21.4454437 C12.8553284,22.2264923 11.5889984,22.2264923 10.8079498,21.4454437 L0.696538306,11.3340321 C0.330220984,10.9677148 0.00960125957,10.5179681 0.000337990566,10 L0.000337990566,2 C-0.0199141638,0.867573645 0.872450717,-0.0199252147 2.00487707,0.000326939728 L10.000338,-2.36255456e-13 C10.5183061,0.009263269 10.9368227,0.361113097 11.30314,0.72743042 Z M6,7.99998714 C7.1045695,7.99998714 8,7.10455664 8,5.99998714 C8,4.89541764 7.1045695,3.99998714 6,3.99998714 C4.8954305,3.99998714 4,4.89541764 4,5.99998714 C4,7.10455664 4.8954305,7.99998714 6,7.99998714 Z"/>
+  </defs>
+  <g fill="none" fill-rule="evenodd" transform="translate(1 1)">
+    <g transform="translate(0 7)">
+      <mask id="tag-b" fill="#ffffff">
+        <use xlink:href="#tag-a"/>
+      </mask>
+      <use fill="#D8D8D8" xlink:href="#tag-a"/>
+      <g fill="#FFA0A0" mask="url(#tag-b)">
+        <rect width="24" height="24" transform="translate(-1 -8)"/>
+      </g>
+    </g>
+    <mask id="tag-d" fill="#ffffff">
+      <use xlink:href="#tag-c"/>
+    </mask>
+    <use fill="#000000" fill-rule="nonzero" transform="matrix(-1 0 0 1 22 0)" xlink:href="#tag-c"/>
+    <g fill="#7600FF" mask="url(#tag-d)">
+      <rect width="24" height="24" transform="translate(-1 -1)"/>
+    </g>
+  </g>
+</svg>

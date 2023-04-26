@@ -1,6 +1,6 @@
 #variables for bashblog.
-#EDITOR="geany -i"
-EDITOR="mozeditor"
+EDITOR="geany -i"
+#EDITOR="mozeditor"
 
 #shellcms can be a blog or a document-management site. values: document, blog
 MODE="blog"
@@ -10,19 +10,19 @@ global_title="My News"
 # The typical subtitle for each blog
 global_description="Technology and Linux news"
 # url of the site
-global_site_url="http://bkhome.org"
+global_site_url="http://adevjournal.info"
 # The public base URL for shellCMS
 global_cms_url="${global_site_url}/news"
 
 # Your name
-global_author="BarryK"
+global_author="Andres H"
 # You can use twitter or facebook or anything for global_author_url
-global_author_url="http://bkhome.org" 
+global_author_url="http://adevjournal.info"
 # Your email
 global_email="info@nowhere.org"
 
 # CC by-nc-nd is a good starting point, you can change this to "&copy;" for Copyright
-global_license="&copy; Copyright Barry Kauler 2017"
+global_license="&copy; Copyright Andres Hernandez 2023"
 
 # to create a disqus shortname, go to:
 # https://disqus.com/admin/create
@@ -54,21 +54,33 @@ button_permanent_2="contact"
 button_permanent_3=""
 
 #button messages, for blog...
+button_sitehome_icon="home-svgrepo-com.svg"
+button_sitehome_tooltip="Website homepage"
 button_sitehome_url="${global_site_url}/"
-button_subhome_icon="news24.png"
+button_sitehome_text="site"
+button_sitehome_url="${global_site_url}/"
+button_subhome_icon="book-svgrepo-com.svg"
 button_subhome_tooltip="News homepage"
 button_subhome_url="${global_cms_url}/"
 button_subhome_text="news"
 button_history_tooltip="Posts history"
+button_history_icon="layers-svgrepo-com.svg"
 button_history_text="history"
 button_tagsindex_tooltip="All categories"
-button_tagsindex_icon="tag24.png"
+button_tagsindex_icon="paper-bag-svgrepo-com.svg"
+button_contact_icon="comment-svgrepo-com.svg"
+button_contact_tooltip="Send email to site manager"
+button_contact_url="http://somewhere.org/contact/"
+button_contact_text="contact"
+button_rss_icon="activity-svgrepo-com.svg"
+button_rss_tooltip="RSS feed"
+button_rss_text="rss"
 
 #search box
 #placement: space-delimited list: "<value1>[ <value2>]". empty, do not display. 
 #allowed values: index post tags all_posts all_docs all_tags
 search_box_pages="index"
-search_box_width="120"
+search_box_width="40"
 #search engine value (choose one): google duckduckgo duckduckgo-official
 search_box_engine="google"
 

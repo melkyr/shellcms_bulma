@@ -2,10 +2,11 @@
 <html>
   <head>
     <meta http-equiv="content-type" content="text/html; charset=UTF-8">
+
   </head>
   <body>
-    <h1>First line must be the heading</h1>
-    <p>put whatever you want here</p>
+    <h1>My new blog?</h1>
+    <p>Lets start posting raw things here and see</p>
     <br />
     <!--RawTags: admin-->
   </body>

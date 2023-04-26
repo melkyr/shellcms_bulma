@@ -302,7 +302,7 @@ global_variables() {
     #allowed values: index post tags all_posts all_docs all_tags
     search_box_pages="index"
     #width of box in pixels:
-    search_box_width="120"
+    search_box_width="50"
     #search engine value (choose one): duckduckgo
     search_box_engine="duckduckgo"
     
@@ -349,12 +349,15 @@ global_variables_check() {
 #create a search box
 search_box_func() {
  base_cms_url="${global_cms_url/*\/\//}" #take off http://
+ css_style_form="field has-addons"
+ css_style_input="input is-small mt-1"
+ css_style_button="button is-small mt-1"
  case $search_box_engine in
   google)
-   echo "<form action=\"https://www.google.com/search\" target=\"_blank\" style=\"float:right\">
-  <input type=\"text\" name=\"q\" value=\"search\" style=\"width:${search_box_width}\">
+   echo "<form class=\"${css_style_form}\" action=\"https://www.google.com/search\" target=\"_blank\" style=\"float:right\">
+  <input class=\"${css_style_input}\" type=\"text\" name=\"q\" placeholder=\"search\" style=\"width:${search_box_width}\">
   <input type=\"hidden\" name=\"sitesearch\" value=\"${base_cms_url}\">
-  <button type=\"submit\">Go</button>
+  <button class=\"${css_style_button}\" type=\"submit\">Go</button>
 </form>"
   ;;
   duckduckgo-official)
@@ -578,6 +581,7 @@ twitter() {
 # Adds all the bells and whistles to format the html page
 # Every blog post is marked with a <!-- entry begin --> and <!-- entry end -->
 # which is parsed afterwards in the other functions. There is also a marker
+# 20230424 added customization to the classes for the header div and content, suited for bulmacss please be aware if you switch css file.
 # <!-- text begin --> to determine just the beginning of the text body of the post
 #
 # $1     a file with the body of the content
@@ -594,6 +598,7 @@ create_html_page() {
     title=$4
     timestamp=$5
     author=$6
+    css_style_post_subtitle="subtitle is-6"
     nameonly="$(basename $filename .html)"
 
     # Create the actual blog post
@@ -607,13 +612,13 @@ create_html_page() {
         # stuff to add before the actual body content
         [[ -n $body_begin_file ]] && cat "$body_begin_file"
         # body divs
-        echo '<div id="divbodyholder">'
+        echo '<div id="divbodyholder" class="column is-narrow">'
         echo '<div class="headerholder"><div class="header">'
         # blog title
         echo '<div id="title">'
         cat .title.html
         echo '</div></div></div>' # title, header, headerholder
-        echo '<div id="divbody"><div class="content">'
+        echo '<div id="divbody" class="colunms is-centered"><div class="column is-full"><div class="content">'
 
         file_url=${filename#./}
         file_url=${file_url%.rebuilt} # Get the correct URL when rebuilding
@@ -633,9 +638,9 @@ create_html_page() {
                 echo "<!-- $date_inpost: #$(LC_ALL=$date_locale date +"$date_format_timestamp" --date="$timestamp")# -->"
             fi
             if [[ -z $timestamp ]]; then
-                echo -n "<div class=\"subtitle\">$(LC_ALL=$date_locale date +"$date_format")"
+                echo -n "<div class=\"${css_style_post_subtitle}\">$(LC_ALL=$date_locale date +"$date_format")"
             else
-                echo -n "<div class=\"subtitle\">$(LC_ALL=$date_locale date +"$date_format" --date="$timestamp")"
+                echo -n "<div class=\"${css_style_post_subtitle}\">$(LC_ALL=$date_locale date +"$date_format" --date="$timestamp")"
             fi
             [[ -n $author ]] && echo -e " &mdash; \n$author"
             echo "</div>"
@@ -660,11 +665,12 @@ create_html_page() {
             echo -e '\n<!-- text end -->'
 
             twitter "$global_cms_url/$file_url"
-
+            
             echo '<!-- entry end -->' # absolute end of the post
+            
         fi
 
-        echo '</div>' # content
+        echo '</div></div>' # content
 
         # Add disqus commments except for index and all_posts pages
         [[ $page_type == post ]] && disqus_body #170830b
@@ -716,17 +722,18 @@ create_html_page() {
     } > "$filename"
     
     #for anything other than frontpage of bashblog, want link to frontpage...
+    css_button_style="button is-info is-light"
     if [ "$global_site_url" != "$global_cms_url" ];then #170831b if equal, already have link.
      case $MODE in
       document)
        if [[ $page_type != all_docs ]];then #all_docs.html becomes index.html, see end script.
-        ibPTN="s%.*THIRDBUTTON.*%\&nbsp;<a href=\"${button_subhome_url}\"><img src=\"images0/${button_subhome_icon}\" width=\"24\" height=\"24\" alt=\"subhome\" title=\"${button_subhome_tooltip}\" />${button_subhome_text}</a>%"
+        ibPTN="s%.*THIRDBUTTON.*%\&nbsp;<a class=\"${css_button_style}\ href=\"${button_subhome_url}\"><img src=\"images0/${button_subhome_icon}\" width=\"24\" height=\"24\" alt=\"subhome\" title=\"${button_subhome_tooltip}\" />${button_subhome_text}</a>%"
         sed -i -e "$ibPTN" $filename
        fi
       ;;
       *)
        if [[ $page_type != index ]];then #rebuild_index() generates index.html.
-        ibPTN="s%.*THIRDBUTTON.*%\&nbsp;<a href=\"${button_subhome_url}\"><img src=\"images0/${button_subhome_icon}\" width=\"24\" height=\"24\" alt=\"subhome\" title=\"${button_subhome_tooltip}\" />${button_subhome_text}</a>%"
+        ibPTN="s%.*THIRDBUTTON.*%\&nbsp;<a class=\"${css_button_style}\  href=\"${button_subhome_url}\"><img src=\"images0/${button_subhome_icon}\" width=\"24\" height=\"24\" alt=\"subhome\" title=\"${button_subhome_tooltip}\" />${button_subhome_text}</a>%"
         sed -i -e "$ibPTN" $filename
        fi
       ;;
@@ -872,6 +879,7 @@ parse_file_func() {
  #works, but not if </h1> is on line-1. the '0,/...' works both cases.
  
  #read tags, append hyperlinks to post...
+ css_style_tag="tag is-info is-light"
  tags="$(grep -o '\-\-RawTags: .*' ${1} | tail -n 1 | tr ',' ' ' | tr -s ' ' | sed -e 's%^--RawTags: %%' -e 's%-->$%%')"
  [ ! "$tags" ] && err_exit "<!--RawTags: ...> missing from ${i}"
  if [ "${filename##*/}" != "index.html" ];then #index.html page has tag-posts index inserted (see create_html_page)
@@ -881,7 +889,7 @@ parse_file_func() {
   for atag in $tags
   do
    #posts are in sub-folders, so insert "../" here.
-   echo -n "<a href='../tag_${atag}.html'>${atag}</a>, "
+   echo -n "<a class=\"${css_style_tag}\"href='../tag_${atag}.html'>${atag}</a>, "
   done | sed 's%, $%</p>%' >> "$content"
  fi
  
@@ -1274,9 +1282,10 @@ rebuild_index() {
     mv "$newindexfile" "$index_file"
     chmod 644 "$index_file"
     #170824 BK buttons at top...
-    ibPTN="s%.*THIRDBUTTON.*%\&nbsp;<a href=\"./${archive_index}\"><img src=\"images0/${button_history_icon}\" width=\"24\" height=\"24\" title=\"${button_history_tooltip}\" />${button_history_text}</a>%"
+    css_button_style="button is-info is-light" #20230424 added support for custom css button style in the headers
+    ibPTN="s%.*THIRDBUTTON.*%\&nbsp;<a class=\"${css_button_style}\" href=\"./${archive_index}\"><img src=\"images0/${button_history_icon}\" width=\"24\" height=\"24\" title=\"${button_history_tooltip}\" />${button_history_text}</a>%"
     sed -i -e "$ibPTN" $index_file
-    ibPTN="s%.*FOURTHBUTTON.*%\&nbsp;<a href=\"./${tags_index}\"><img src=\"images0/${button_tagsindex_icon}\" width=\"24\" height=\"24\" title=\"${button_tagsindex_tooltip}\" />${button_tagsindex_text}</a>%"
+    ibPTN="s%.*FOURTHBUTTON.*%\&nbsp;<a class=\"${css_button_style}\" href=\"./${tags_index}\"><img src=\"images0/${button_tagsindex_icon}\" width=\"24\" height=\"24\" title=\"${button_tagsindex_tooltip}\" />${button_tagsindex_text}</a>\&nbsp;%"
     sed -i -e "$ibPTN" $index_file
     #ibPTN="s%.*FIFTHBUTTON.*%\&nbsp;<a href=\"$feed\"><img src=\"images0/${button_rss_icon}\" width=\"24\" height=\"24\" title=\"${button_rss_tooltip}\" />${button_rss_text}</a>%"
     #sed -i -e "$ibPTN" $index_file
@@ -1515,12 +1524,30 @@ create_includes() {
     #    echo "<h1 class=\"nomargin\"><a class=\"ablack\" href=\"$global_cms_url/$index_file\">$global_title</a></h1>" 
     #    echo "<div id=\"description\">$global_description</div>"
     #} > ".title.html"
-    echo "<img src=\"images0/top-banner.png\" />" > ".title.html"
+    
+    #echo "<img src=\"images0/top-banner.png\" />" > ".title.html"
+    css_style_container="columns is-multiline is-vcentered"
+    css_style_banner_outer_container="column"
+    css_style_banner_picture_container="column is-narrow is-vcentered ml-3 pb-0"
+    css_style_banner_text_container="column is-narrow ml-3 pr-0 pb-0"
+    banner_picture="sleep-svgrepo-com.svg"
+    css_style_figure_parameters="image is-128x128"
+    css_style_title_size="is-size-2"
+    echo "<div class=\"${css_style_container}\">" > ".title.html"    
+    echo "<div class=\"${css_style_banner_picture_container}\">" >> ".title.html"
+    echo "<figure class=\"${css_style_figure_parameters}\">" >> ".title.html"
+    echo "<img src=\"images0/${banner_picture}\" />" >> ".title.html"
+    echo "</figure></div>" >> ".title.html"
+    echo "<div class=\"${css_style_banner_text_container}\">" >> ".title.html"
+    #echo "<div class=\"content\">" >> ".title.html"
+    echo "<h1 class=\"title is-size-2\"><strong>shellCMS</strong></h1>" >> ".title.html" 
+    echo "<p class=\"subtitle\">a simple static site generator</p>" >> ".title.html" 
+    #echo "</div>" >> ".title.html" #text container
+    echo "</div></div>" >> ".title.html" #containers
     
     #170830a buttons below banner...
-    echo '<br />' >> ".title.html"
-    
-    echo '<big>' >> .title.html
+    echo '<div class="column is-narrow pt-0">' >> .title.html
+    css_button_style="button is-primary is-light" #20230424 Added support for a css_button_style class for the headers.
     for NUM in 1 2 3 #permanent buttons, all pages.
     do
      eval "PERM=\$button_permanent_${NUM}" #implements indirection. ex: PERM=sitehome
@@ -1529,7 +1556,7 @@ create_includes() {
       eval "button_icon=\$button_${PERM}_icon"
       eval "button_tooltip=\$button_${PERM}_tooltip"
       eval "button_text=\$button_${PERM}_text"
-      echo "&nbsp;<a href=\"${button_url}\"><img src=\"images0/${button_icon}\" width=\"24\" height=\"24\" title=\"${button_tooltip}\" />${button_text}</a>" >> ".title.html"
+      echo "<a class=\"${css_button_style}\" href=\"${button_url}\"><img src=\"images0/${button_icon}\" width=\"24\" height=\"24\" title=\"${button_tooltip}\" />${button_text}</a>&nbsp;" >> ".title.html"
      fi
     done
     echo "<!--SECONDBUTTON-->
@@ -1538,7 +1565,7 @@ create_includes() {
         <!--FIFTHBUTTON-->
         <!--SIXTHBUTTON-->
         <!--SEVENTHBUTTON-->
-        </big><br />" >> ".title.html"
+        </div><br />" >> ".title.html"
 
     cp -f "$header_file" .header.html
     cp -f "$footer_file" .footer.html

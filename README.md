@@ -1,4 +1,4 @@
-shellCMS_bulma
+## shellCMS_bulma
 
 shellCMS_bulma is a static site generator Content Management System (CMS) based on the original shellCMS by Barry Kauler, with several modifications to support modern web development practices.
 
@@ -29,7 +29,7 @@ Besides we have also the original benefits of shellCMS
     Supports page SVG icons
     Supports custom SVG picture banners
 
-Usage
+### Usage
 
     Download or clone the repository.
     Modify the config.conf file to customize the site settings, such as the site name and description, banner, and social media links.
@@ -47,7 +47,7 @@ Advantages of a static site
 
 As there is no database, your site is "already archived" on your local PC. You can easily move your site to another remote host by uploading the files to it.
 
-Requirements
+### Requirements
 
 ShellCMS_b runs on any operating system that can run bash. Almost all Linux distributions come with bash preinstalled. Mac also supports bash, but it is not tested. If you are a Windows user, you can boot up a Linux distribution from a USB flash drive (for now). We recommend Puppy Linux or EasyOS, which come with SeaMonkey pre-installed. Alternatively, you can use other WYSIWYG HTML editors or a text editor.
 
@@ -60,11 +60,11 @@ This project is licensed under the terms of the GNU General Public License v3.0.
 
 We would like to thank the original authors of shellCMS, Barry Kauler author of the shellCMS and the bashblog project authors as they are the origin of the project idea, and also for their valuable contributions to this project.
 
-Documentation
+### Documentation
 
 Please refer to the original documentation for more information on using shellCMS.
 
-Credits
+### Credits
 
     Barry Kauler for creating the original shellCMS
     Andres Hernandez for modifying shellCMS to create shellCMS_b.

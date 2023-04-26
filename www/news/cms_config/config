@@ -6,9 +6,9 @@ EDITOR="geany -i"
 MODE="blog"
 
 # Blog title
-global_title="My News"
+global_title="shellCMS_bulma"
 # The typical subtitle for each blog
-global_description="Technology and Linux news"
+global_description="A static html/css site generator powered by bash"
 # url of the site
 global_site_url="http://adevjournal.info"
 # The public base URL for shellCMS

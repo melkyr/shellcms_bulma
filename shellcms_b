@@ -135,7 +135,7 @@ EDITOR0="$EDITOR"
 global_variables() {
     MODE="document" #170828 values: document, blog
     
-    global_software_name="shellCMS"
+    global_software_name="shellCMS_bulma"
     global_software_version="0.1"
 
     # Site title
@@ -1540,8 +1540,8 @@ create_includes() {
     echo "</figure></div>" >> ".title.html"
     echo "<div class=\"${css_style_banner_text_container}\">" >> ".title.html"
     #echo "<div class=\"content\">" >> ".title.html"
-    echo "<h1 class=\"title is-size-2\"><strong>shellCMS</strong></h1>" >> ".title.html" 
-    echo "<p class=\"subtitle\">a simple static site generator</p>" >> ".title.html" 
+    echo "<h1 class=\"title is-size-2\"><strong>${global_title}</strong></h1>" >> ".title.html" 
+    echo "<p class=\"subtitle\">${global_description}</p>" >> ".title.html" 
     #echo "</div>" >> ".title.html" #text container
     echo "</div></div>" >> ".title.html" #containers
     

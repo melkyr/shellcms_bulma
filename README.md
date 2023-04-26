@@ -62,7 +62,13 @@ We would like to thank the original authors of shellCMS, Barry Kauler author of 
 
 ### Documentation
 
-Please refer to the original documentation for more information on using shellCMS.
+Please refer to the original documentation for more information on using [shellCMS](https://github.com/bkauler/woofq/tree/main/easyos/easy-code/rootfs-skeleton/usr/local/shellcms).
+
+Please also refer to the original documentation for more information on using [bulma css framework](https://bulma.io/documentation/) .
+
+Roadmap
+
+    
 
 ### Credits
 

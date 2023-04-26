@@ -1,0 +1,2 @@
+<!-- separated out the footer text, so can change without rebuilding pages -->
+<iframe src="css0/foot.htm" scrolling="no" frameborder="0" marginwidth="0" marginheight="0"></iframe>

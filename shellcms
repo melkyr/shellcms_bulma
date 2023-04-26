@@ -20,6 +20,7 @@
 #20210830 remove variable global_license, as not used.
 #20210830 have removed the hit counter.
 #20211201 support bluegriffon. 20220520 fix.
+#20230423 Fix from commands with option switches issue. Added support for helix/vscode
 
 # Displays the help.
 usage_func() {
@@ -98,17 +99,34 @@ fi
 # with merges in VCS
 global_config="./cms_config/config"
 
-#20211201 may need to change... 20220520 fix...
-if which seamonkey >/dev/null; then
- EDITOR='mozeditor'
-else
- if which bluegriffon >/dev/null;then
-  EDITOR='bluegriffon'
- else
-  EDITOR="geany -i"
- fi
-fi
-#hmmm, do not allow ./cms_config/config to override...
+#20230423 improvement to store more default options when config file not read, order here is important(?)
+readonly available_editors=(
+    'seamonkey|mozeditor'
+    'bluegriffon|bluegriffon'
+    'geany|geany -i'
+    'code|code -n'
+    'hx|hx'
+    'vi|vi'
+    )
+
+function set_baseline_editor(){
+    local editor exec_command
+    local OLDIFS=$IFS 
+    IFS='|'
+    for fields in "${available_editors[@]}"
+    do
+        read -r editor exec_command <<< "$fields"
+        if which $editor >/dev/null; then
+            EDITOR=$exec_command
+            break
+        fi
+    done
+    IFS=$OLDIFS
+}
+# Load a baseline for editors
+set_baseline_editor
+#20230423
+
 EDITOR0="$EDITOR"
 
 
@@ -1627,11 +1645,16 @@ do_main() {
  global_variables_check
  EDITOR="$EDITOR0" #20211201
  
- if [ -x ${PWD0}/${EDITOR} ];then #ex: mozeditor
-  EDITOREXE="${PWD0}/${EDITOR}"
+ #20230421: fix  editor with switches(options) was not working properly because next validation, sanitizing the editor variable first
+EDITORALL="$EDITOR"
+EDITORNOOPT="${EDITORALL%% *}"
+ #20230421
+
+ if [ -x ${PWD0}/${EDITORNOOPT} ];then #ex: mozeditor
+  EDITOREXE="${PWD0}/${EDITORALL}"
  else
-  if which $EDITOR >/dev/null ; then
-   EDITOREXE="$EDITOR"
+  if which $EDITORNOOPT >/dev/null ; then
+   EDITOREXE="$EDITORALL"
   else
    echo "EDITOR='${EDITOR}' PWD='${PWD}'"
    echo "EDITOR variable in 'config' file is invalid, aborting"

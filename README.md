@@ -66,7 +66,7 @@ Please refer to the original documentation for more information on using [shellC
 
 Please also refer to the original documentation for more information on using [bulma css framework](https://bulma.io/documentation/) .
 
-##Roadmap
+## Roadmap
     
     Allow to edit variables of the blog title and subtitle, banner svg file from the config file
     Tie shellCMS_bulma to a fixed version of bulma css to avoid breaking websites.

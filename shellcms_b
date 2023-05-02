@@ -612,7 +612,7 @@ create_html_page() {
         # stuff to add before the actual body content
         [[ -n $body_begin_file ]] && cat "$body_begin_file"
         # body divs
-        echo '<div id="divbodyholder" class="column is-narrow">'
+        echo '<div id="divbodyholder" class="column">'
         echo '<div class="headerholder"><div class="header">'
         # blog title
         echo '<div id="title">'

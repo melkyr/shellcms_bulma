@@ -599,6 +599,7 @@ create_html_page() {
     timestamp=$5
     author=$6
     css_style_post_subtitle="subtitle is-6"
+    css_style_divholder="column is-half-widescreen"
     nameonly="$(basename $filename .html)"
 
     # Create the actual blog post
@@ -612,7 +613,7 @@ create_html_page() {
         # stuff to add before the actual body content
         [[ -n $body_begin_file ]] && cat "$body_begin_file"
         # body divs
-        echo '<div id="divbodyholder" class="column">'
+        echo '<div id="divbodyholder" class=\"${css_style_divholder}\">'
         echo '<div class="headerholder"><div class="header">'
         # blog title
         echo '<div id="title">'

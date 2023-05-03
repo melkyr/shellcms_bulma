@@ -104,7 +104,7 @@ readonly available_editors=(
     'seamonkey|mozeditor'
     'bluegriffon|bluegriffon'
     'geany|geany -i'
-    'code|code -n'
+    'code|code -n -w'
     'hx|hx'
     'vi|vi'
     )

@@ -1,1 +1,2 @@
-<div class="columns is-vcentered is-centered">
+<div class="container grid-lg">
+<div class="columns">

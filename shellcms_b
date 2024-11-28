@@ -104,7 +104,7 @@ readonly available_editors=(
     'seamonkey|mozeditor'
     'bluegriffon|bluegriffon'
     'geany|geany -i'
-    'code|code -n -w'
+    'code|code -n'
     'hx|hx'
     'vi|vi'
     )
@@ -175,7 +175,7 @@ global_variables() {
 
     # Change this to your disqus username to use disqus for comments
     global_disqus_username=""
-
+    posts_per_page=4
 
     # Blog generated files
     # index page of blog (it is usually good to use "index.html" here)
@@ -449,16 +449,20 @@ disqus_footer() {
 }
 
 # Reads HTML file from stdin, prints its content to stdout
-# $1    where to start ("text" or "entry")
-# $2    where to stop ("text" or "entry")
-# $3    "cut" to remove text from <hr /> to <!-- text end -->
-#       note that this does not remove <hr /> line itself,
-#       so you can see if text was cut or not
+# Extracts content between specified markers and handles content truncation
 get_html_file_content() {
-    awk "/<!-- $1 begin -->/, /<!-- $2 end -->/{
-        if (!/<!-- $1 begin -->/ && !/<!-- $2 end -->/) print
-        if (\"$3\" == \"cut\" && /$cut_line/){
-            if (\"$2\" == \"text\") exit # no need to read further
+    local start_marker="$1"    # Where to start ("text" or "entry")
+    local end_marker="$2"      # Where to stop ("text" or "entry")
+    local should_cut="$3"      # "cut" to truncate at <hr /> tag
+    
+    awk "/<!-- ${start_marker} begin -->/, /<!-- ${end_marker} end -->/{
+        # Print content between markers, excluding the markers themselves
+        if (!/<!-- ${start_marker} begin -->/ && !/<!-- ${end_marker} end -->/) print
+        
+        # Handle content truncation if requested
+        if (\"${should_cut}\" == \"cut\" && /$cut_line/){
+            if (\"${end_marker}\" == \"text\") exit
+            # Preserve tags if needed while truncating
             while (getline > 0 && !/<!-- text end -->/) {
                 if (\"$cut_tags\" == \"no\" && /^<p>$template_tags_line_header/ ) print 
             }
@@ -591,258 +595,329 @@ twitter() {
 # $4     title for the html header
 # $5     original blog timestamp
 # $6     post author
+# Core page generation function
 create_html_page() {
-    content=$1
-    filename=$2
-    page_type=$3
-    title=$4
-    timestamp=$5
-    author=$6
-    css_style_post_subtitle="subtitle is-6"
-    css_style_divholder="column is-half-widescreen"
-    nameonly="$(basename $filename .html)"
+    local content="$1"
+    local filename="$2"
+    local page_type="$3"
+    local title="$4"
+    local timestamp="$5"
+    local author="$6"
+    
+    local file_url=${filename#./}
+    file_url=${file_url%.rebuilt}
+    local nameonly="$(basename $filename .html)"
 
-    # Create the actual blog post
-    # html, head
     {
-        cat ".header.html"
-        echo "<title>$title</title>"
-        google_analytics
-        twitter_card "$content" "$title"
-        echo "</head><body>"
-        # stuff to add before the actual body content
-        [[ -n $body_begin_file ]] && cat "$body_begin_file"
-        # body divs
-        echo '<div id="divbodyholder" class=\"${css_style_divholder}\">'
-        echo '<div class="headerholder"><div class="header">'
-        # blog title
-        echo '<div id="title">'
-        cat .title.html
-        echo '</div></div></div>' # title, header, headerholder
-        echo '<div id="divbody" class="colunms is-centered"><div class="column is-full"><div class="content">'
-
-        file_url=${filename#./}
-        file_url=${file_url%.rebuilt} # Get the correct URL when rebuilding
-        # one blog entry
-        if [[ $page_type == post ]]; then
-            echo '<!-- entry begin -->' # marks the beginning of the whole post
-            echo "<h3><a class=\"bblack\">"
-            echo "<!--TITLEWITHLINK<h3><a class=\"ablack\" href=\"$file_url\">TITLEWITHLINK-->" #170901a
-            # remove possible <p>'s on the title because of markup conversion
-            title=${title//<p>/}
-            title=${title//<\/p>/}
-            echo "$title"
-            echo '</a></h3>'
-            if [[ -z $timestamp ]]; then
-                echo "<!-- $date_inpost: #$(LC_ALL=$date_locale date +"$date_format_timestamp")# -->"
-            else
-                echo "<!-- $date_inpost: #$(LC_ALL=$date_locale date +"$date_format_timestamp" --date="$timestamp")# -->"
-            fi
-            if [[ -z $timestamp ]]; then
-                echo -n "<div class=\"${css_style_post_subtitle}\">$(LC_ALL=$date_locale date +"$date_format")"
-            else
-                echo -n "<div class=\"${css_style_post_subtitle}\">$(LC_ALL=$date_locale date +"$date_format" --date="$timestamp")"
-            fi
-            [[ -n $author ]] && echo -e " &mdash; \n$author"
-            echo "</div>"
-            echo '<!-- text begin -->' # This marks the text body, after the title, date...
-        fi
+        generate_page_header "$title" "$content"
+        generate_page_body "$content" "$page_type" "$title" "$timestamp" "$author" "$file_url" "$nameonly"
+        generate_page_footer "$page_type" "$nameonly"
         
-        ###actual content###
-        cat "$content"
-        
-        #when create or edit a $tag/index.html page, insert contents index of posts with that tag...
-        if [ "$page_type" == "post" -a "$nameonly" == "index" ];then
-         echo "<hr />"
-         #$1 has the tags (global variable $tags does too, but maybe not always)
-         #onetag="${tags%% *}" #there will only be one tag, just a precaution.
-         onetag="$(grep -o '\-\-RawTags: .*\-\-' ${content} | tail -n 1 | tr -s ' ' | cut -f 2 -d ' ' | cut -f 1 -d '-')"
-         #this func writes to stdout...
-         category_index_func $onetag
-         echo '<br />'
-        fi
-        
-        if [[ $page_type == post ]]; then
-            echo -e '\n<!-- text end -->'
-
-            twitter "$global_cms_url/$file_url"
-            
-            echo '<!-- entry end -->' # absolute end of the post
-            
-        fi
-
-        echo '</div></div>' # content
-
-        # Add disqus commments except for index and all_posts pages
-        [[ $page_type == post ]] && disqus_body #170830b
-        
-        #170822 BK want link back to index page, for post views also...
-        if [[ $page_type == post ]];then #170830b
-         echo "<div id=\"all_posts\"><a href=\"../${index_file}\">${template_archive_index_page}</a></div>"
-        fi
-        #170829b tag_*.html pages may be split...
-        if [ "$page_type" == "tags" ];then
-         first_nameonly="${nameonly/-*/}" #ex: tag_quirky
-         if [ $num_splits -gt 1 ];then
-          next_split=$(($cnt_splits+1))
-          prev_split=$(($cnt_splits-1))
-          if [ $cnt_splits -eq 1 ];then
-           echo ' &nbsp; '
-           echo "<div id=\"all_posts\"><a href=\"${first_nameonly}-${next_split}.html\">${older_page_link_msg} &rarr;</a></div>"
-          elif [ $cnt_splits -ge 9 ];then #limit of number of split pages. 171110 increase from 6.
-           echo ' &nbsp; '
-           echo "<div id=\"all_posts\"><a href=\"${first_nameonly}-${prev_split}.html\">&larr; ${newer_page_link_msg}</a></div>"
-           echo "<div id=\"all_posts\"><a href=\"${archive_index}\"> ${older_page_link_msg} &rarr;</a></div>"
-          elif [ $cnt_splits -ge $num_splits ];then
-           echo ' &nbsp; '
-           if [ $prev_split -eq 1 ];then
-            echo "<div id=\"all_posts\"><a href=\"${first_nameonly}.html\">&larr; ${newer_page_link_msg}</a></div>"
-           else
-            echo "<div id=\"all_posts\"><a href=\"${first_nameonly}-${prev_split}.html\">&larr; ${newer_page_link_msg}</a></div>"
-           fi
-          else
-           echo ' &nbsp; '
-           if [ $prev_split -eq 1 ];then
-            echo "<div id=\"all_posts\"><a href=\"${first_nameonly}.html\">&larr; ${newer_page_link_msg}</a></div>"
-           else
-            echo "<div id=\"all_posts\"><a href=\"${first_nameonly}-${prev_split}.html\">&larr; ${newer_page_link_msg}</a></div>"
-           fi
-           echo ' '
-           echo "<div id=\"all_posts\"><a href=\"${first_nameonly}-${next_split}.html\">${older_page_link_msg} &rarr;</a></div>"
-          fi
-         fi
-        fi
-
-        # page footer
-        cat .footer.html
-        # close divs
-        echo '</div></div>' # divbody and divbodyholder 
-        disqus_footer
-        [[ -n $body_end_file ]] && cat "$body_end_file"
-        echo '</body></html>'
     } > "$filename"
-    
-    #for anything other than frontpage of bashblog, want link to frontpage...
-    css_button_style="button is-info is-light"
-    if [ "$global_site_url" != "$global_cms_url" ];then #170831b if equal, already have link.
-     case $MODE in
-      document)
-       if [[ $page_type != all_docs ]];then #all_docs.html becomes index.html, see end script.
-        ibPTN="s%.*THIRDBUTTON.*%\&nbsp;<a class=\"${css_button_style}\ href=\"${button_subhome_url}\"><img src=\"images0/${button_subhome_icon}\" width=\"24\" height=\"24\" alt=\"subhome\" title=\"${button_subhome_tooltip}\" />${button_subhome_text}</a>%"
-        sed -i -e "$ibPTN" $filename
-       fi
-      ;;
-      *)
-       if [[ $page_type != index ]];then #rebuild_index() generates index.html.
-        ibPTN="s%.*THIRDBUTTON.*%\&nbsp;<a class=\"${css_button_style}\  href=\"${button_subhome_url}\"><img src=\"images0/${button_subhome_icon}\" width=\"24\" height=\"24\" alt=\"subhome\" title=\"${button_subhome_tooltip}\" />${button_subhome_text}</a>%"
-        sed -i -e "$ibPTN" $filename
-       fi
-      ;;
-     esac
-    fi
-    
-    #170831c posts have tag links href='../tag_*, remove the "../"
-    if [ "$page_type" != "post" ];then
-     sed -i -e "s%href='\.\./tag_%href='tag_%g" $filename #180303 fix multiple same line.
-     #precaution, top-level index web pages... 170831d
-     sed -i -e 's%src="\.\./images0/%src="images0/%g' $filename #180303 fix multiple same line.
-     #20210830 css now a separate file. ref: main_header.txt ...
-     sed -i -e 's%href="\.\./css0/%href="css0/%g' $filename
-     # and cms_footer.txt ...
-     sed -i -e 's%src="\.\./css0/%src="css0/%g' $filename
-    else
-     #img links are to images0/, but posts are in a sub-folder... 170831d
-     sed -i -e 's%src="images0/%src="../images0/%g' $filename #180303 fix multiple same line.
-     #20210830 css now a separate file. ref: main_header.txt ...
-     sed -i -e 's%href="css0/%href="../css0/%g' $filename
-      # and cms_footer.txt ...
-     sed -i -e 's%src="css0/%src="../css0/%g' $filename
-    fi
-    
-    final_file_basename="$page_type" #the generated file will be $page_type.html, except for "tags" which generates tag_*.html
-    #document mode, all_docs.html gets renamed to index.html
-    [ "$MODE" == "document" ] && [ "$final_file_basename" == "all_docs" ] && final_file_basename="index"
-    
-    #search box
-    if [ "$search_box_pages" ];then
-     if [ "$(echo " ${search_box_pages} " | grep " ${final_file_basename} ")" != "" ];then
-      form_xml="$(search_box_func | tr '\n' ' ')"
-      ibPTN="s%.*SEVENTHBUTTON.*%${form_xml}%"
-      sed -i -e "$ibPTN" $filename
-      
-      #20210830 have removed the hit counter...
-      ##200202 hit-counter...
-      #if [ -f cms_config/hit-counter ];then
-      # #note, "&" messes things up, back-slash it...
-      # hit_xml="$(sed -e 's%&%\\\&%g' cms_config/hit-counter | tr '\n' ' ')"
-      # #"MYHITCOUNTER" is in cms_footer.txt...
-      # hitPTN="s%.*MYHITCOUNTER.*%${hit_xml}%"
-      # #20210830 have moved MYHITCOUNTER...
-      # #sed -i -e "${hitPTN}" ${filename}
-      # if [ -f css0/foot.txt ];then #note: only need to do this once!
-      #  sed -i -e "${hitPTN}" css0/foot.txt
-      # fi
-      #fi
-      
-     fi
-    fi
-    
-    #a <category>/index.html may have its own banner. do it for all <category>/*.html
-    #if [ "$page_type" == "post" -a "$nameonly" == "index" ];then
-     if [ -f images/top-banner.png ];then #images is a temporary symlink into <category>/images
-      sed -i -e 's%\.\./images0/top-banner%images/top-banner%' $filename
-     fi
-    #fi
+
+    post_process_page "$filename" "$page_type"
 }
 
+# Body generation with all conditionals
+generate_page_body() {
+    local content="$1"
+    local page_type="$2"
+    local title="$3"
+    local timestamp="$4"
+    local author="$5"
+    local file_url="$6"
+    local nameonly="$7"
+
+    [[ -n $body_begin_file ]] && cat "$body_begin_file"
+    
+    echo '<div id="divbodyholder" class="column is-half-widescreen">'
+    echo '<div class="headerholder"><div class="header">'
+    echo '<div id="title">'
+    cat .title.html
+    echo '</div></div></div>'
+    echo '<div id="divbody" class="colunms is-centered"><div class="column is-full"><div class="content">'
+
+    if [[ $page_type == post ]]; then
+        generate_post_entry "$title" "$timestamp" "$author" "$content" "$file_url" "$nameonly"
+    else
+        cat "$content"
+    fi
+
+    if [ "$page_type" == "tags" ]; then
+        generate_tag_pagination "$nameonly" "$num_splits" "$cnt_splits"
+    fi
+}
+
+# Post entry specific generation
+generate_post_entry() {
+    local title="$1"
+    local timestamp="$2" 
+    local author="$3"
+    local content="$4"
+    local file_url="$5"
+    local nameonly="$6"
+
+    echo '<!-- entry begin -->'
+    generate_post_header "$title" "$file_url"
+    generate_post_metadata "$timestamp" "$author"
+    echo '<!-- text begin -->'
+    
+    cat "$content"
+    
+    if [ "$nameonly" == "index" ]; then
+        echo "<hr />"
+        onetag="$(grep -o '\-\-RawTags: .*\-\-' ${content} | tail -n 1 | tr -s ' ' | cut -f 2 -d ' ' | cut -f 1 -d '-')"
+        category_index_func $onetag
+        echo '<br />'
+    fi
+
+    echo -e '\n<!-- text end -->'
+    twitter "$global_cms_url/$file_url"
+    echo '<!-- entry end -->'
+}
+
+# Tag pagination handling
+generate_tag_pagination() {
+    local nameonly="$1"
+    local num_splits="$2"
+    local cnt_splits="$3"
+    
+    first_nameonly="${nameonly/-*/}"
+    
+    if [ $num_splits -gt 1 ]; then
+        local next_split=$(($cnt_splits+1))
+        local prev_split=$(($cnt_splits-1))
+        
+        generate_pagination_links "$first_nameonly" "$cnt_splits" "$prev_split" "$next_split" "$num_splits"
+    fi
+}
+
+post_process_page() {
+    local filename="$1"
+    local page_type="$2"
+    local subfolder="${filename%/*}"  # Extract subfolder path if present
+    
+    # Process paths based on both page type and location
+    if [ "$page_type" != "post" ] && [ "$subfolder" == "$filename" ]; then
+        # Top level non-post files - remove "../" prefix
+        sed -i -e "s%href='\.\./tag_%href='tag_%g" $filename
+        sed -i -e 's%src="\.\./images0/%src="images0/%g' $filename
+        sed -i -e 's%href="\.\./css0/%href="css0/%g' $filename
+        sed -i -e 's%src="\.\./css0/%src="css0/%g' $filename
+    else
+        # Posts and files in subfolders - add "../" prefix
+        sed -i -e 's%src="images0/%src="../images0/%g' $filename
+        sed -i -e 's%href="css0/%href="../css0/%g' $filename
+        sed -i -e 's%src="css0/%src="../css0/%g' $filename
+    fi
+
+    # Handle category-specific banner
+    if [ -f images/top-banner.png ]; then
+        sed -i -e 's%\.\./images0/top-banner%images/top-banner%' $filename
+    fi
+
+    # Handle site home button and search box
+    process_home_button "$filename" "button is-info is-light"
+    process_search_box "$filename" "$page_type"
+}
+process_home_button() {
+    local filename="$1"
+    local css_button_style="$2"
+    local page_type="$3"
+    local subfolder="${filename%/*}"
+    local image_prefix=""
+    
+    # Add "../" prefix for files in subfolders
+    [ "$subfolder" != "$filename" ] && image_prefix="../"
+    
+    if [ "$global_site_url" != "$global_cms_url" ]; then
+        case $MODE in
+            document)
+                if [[ $page_type != all_docs ]]; then
+                    local ibPTN="s%.*THIRDBUTTON.*%\&nbsp;<a class=\"${css_button_style}\" href=\"${button_subhome_url}\"><img src=\"${image_prefix}images0/${button_subhome_icon}\" width=\"24\" height=\"24\" alt=\"subhome\" title=\"${button_subhome_tooltip}\" />${button_subhome_text}</a>%"
+                    sed -i -e "$ibPTN" $filename
+                fi
+                ;;
+            *)
+                if [[ $page_type != index ]]; then
+                    local ibPTN="s%.*THIRDBUTTON.*%\&nbsp;<a class=\"${css_button_style}\" href=\"${button_subhome_url}\"><img src=\"${image_prefix}images0/${button_subhome_icon}\" width=\"24\" height=\"24\" alt=\"subhome\" title=\"${button_subhome_tooltip}\" />${button_subhome_text}</a>%"
+                    sed -i -e "$ibPTN" $filename
+                fi
+                ;;
+        esac
+    fi
+}
+
+# Footer with all conditionals
+generate_page_footer() {
+    local page_type="$1"
+    local nameonly="$2"
+    
+    echo '</div></div>'
+    
+    [[ $page_type == post ]] && {
+        disqus_body
+        echo "<div class=\"content\">"
+        echo "<div id=\"all_posts\"><a href=\"../${index_file}\">${template_archive_index_page}</a></div>"
+        echo "</div>"
+    }
+    cat .footer.html
+    echo '</div></div>'
+    disqus_footer
+    [[ -n $body_end_file ]] && cat "$body_end_file"
+    echo '</body></html>'
+}
+generate_pagination_link() {
+    local url="$1"
+    local direction="$2"
+    local message="$3"
+    
+    local arrow="&rarr;"
+    [[ $direction == "prev" ]] && arrow="&larr;"
+    
+    echo "<div id=\"all_posts\"><a href=\"${url}\">${arrow} ${message}</a></div>"
+}
+
+get_prev_page_url() {
+    local first_nameonly="$1"
+    local prev_split="$2"
+    
+    if [ $prev_split -eq 1 ]; then
+        echo "${first_nameonly}.html"
+    else
+        echo "${first_nameonly}-${prev_split}.html"
+    fi
+}
+
+generate_pagination_links() {
+    local first_nameonly="$1"
+    local cnt_splits="$2"
+    local prev_split="$3"
+    local next_split="$4"
+    local num_splits="$5"
+
+    echo ' &nbsp; '
+
+    case $cnt_splits in
+        1)
+            generate_pagination_link "${first_nameonly}-${next_split}.html" "next" "${older_page_link_msg}"
+            ;;
+        9)
+            generate_pagination_link "$(get_prev_page_url "$first_nameonly" "$prev_split")" "prev" "${newer_page_link_msg}"
+            generate_pagination_link "${archive_index}" "next" "${older_page_link_msg}"
+            ;;
+        *)
+            if [ $cnt_splits -ge $num_splits ]; then
+                generate_pagination_link "$(get_prev_page_url "$first_nameonly" "$prev_split")" "prev" "${newer_page_link_msg}"
+            else
+                generate_pagination_link "$(get_prev_page_url "$first_nameonly" "$prev_split")" "prev" "${newer_page_link_msg}"
+                echo ' '
+                generate_pagination_link "${first_nameonly}-${next_split}.html" "next" "${older_page_link_msg}"
+            fi
+            ;;
+    esac
+}
+
+generate_page_header() {
+    local title="$1"
+    local content="$2"
+    
+    cat ".header.html"
+    echo "<title>$title</title>"
+    google_analytics
+    twitter_card "$content" "$title"
+    echo "</head><body>"
+}
+
+generate_post_header() {
+    local title="$1"
+    local file_url="$2"
+    
+    echo "<h3><a class=\"bblack\">"
+    echo "<!--TITLEWITHLINK<h3><a class=\"ablack\" href=\"$file_url\">TITLEWITHLINK-->"
+    title=${title//<p>/}
+    title=${title//<\/p>/}
+    echo "$title"
+    echo '</a></h3>'
+}
+
+generate_post_metadata() {
+    local timestamp="$1"
+    local author="$2"
+    
+    local formatted_timestamp
+    if [[ -z $timestamp ]]; then
+        formatted_timestamp=$(LC_ALL=$date_locale date +"$date_format_timestamp")
+        echo "<!-- $date_inpost: #${formatted_timestamp}# -->"
+        echo -n "<div class=\"subtitle\">$(LC_ALL=$date_locale date +"$date_format")"
+    else
+        formatted_timestamp=$(LC_ALL=$date_locale date +"$date_format_timestamp" --date="$timestamp")
+        echo "<!-- $date_inpost: #${formatted_timestamp}# -->"
+        echo -n "<div class=\"subtitle\">$(LC_ALL=$date_locale date +"$date_format" --date="$timestamp")"
+    fi
+    
+    [[ -n $author ]] && echo -e " &mdash; \n$author"
+    echo "</div>"
+}
+
+process_search_box() {
+    local filename="$1"
+    local page_type="$2"
+    
+    if [ "$search_box_pages" ]; then
+        local final_file_basename="$page_type"
+        [ "$MODE" == "document" ] && [ "$final_file_basename" == "all_docs" ] && final_file_basename="index"
+        
+        if [ "$(echo " ${search_box_pages} " | grep " ${final_file_basename} ")" != "" ]; then
+            form_xml="$(search_box_func | tr '\n' ' ')"
+            ibPTN="s%.*SEVENTHBUTTON.*%${form_xml}%"
+            sed -i -e "$ibPTN" $filename
+        fi
+    fi
+}
 #*before* creating or editing a post, ask for tag
 # $1=file to edit. if existing file: $2=sub-folder
 # $3 optional, preset tag.
 ask_tags_func() {
- #read tags from $1, modify if changed
- tags="$(grep -o '\-\-RawTags: .*' ${1} | tail -n 1 | tr ',' ' ' | tr -s ' ' | sed -e 's%^--RawTags: %%' -e 's%-->$%%')"
- oldtags="$tags"
- 
- if [ "$3" ];then
-  tags="$3"
- else
-  if [ "$MODE" == "document" -a "$2" != "" ];then
-   #document mode, existing post, do not allow change tag.
-   true
-  else
-   echo
-   echo -n "Available tags: "
-   echo "$tag2header" | cut -f 1 -d ' ' | tr '\n' ' '
-   echo
-   echo "Your current selection: ${tags}"
-   [ "$MODE" == "document" ] && echo 'NOTE: As running in "document" mode, only ONE tag allowed per post.'
-   echo -n "Press ENTER to accept, or type replacement: "
-   read newtags
-   [ "$newtags" ] && tags="$(echo -n "$newtags" | tr ',' ' ' | tr -s ' ')"
-   [ "$MODE" == "document" ] && tags="${tags%% *}" #cut out any extra tags.
-   [ ! "$tags" ] && tags="$(echo "$tag2header" | cut -f 1 -d ' ' | head -n 1)" #precaution
-  fi
- fi
- 
- if [ "$oldtags" != "$tags" ];then
-  tPTN="s%--RawTags: .*-->%--RawTags: ${tags}-->%"
-  sed -i -e "$tPTN" ${1}
- fi
- 
- #create a temporary symlink, in case post has images...
- if [ "$2" ];then
-  SUB1="$2" #sub-folder has been supplied
- else
-  #this is a new post, or editing a draft
-  if [ "$MODE" == "document" ];then
-   SUB1="${tags%% *}" #tag is the sub-folder name
-  else
-   SUB1="$(LC_ALL=C date +%Y%m)" #sub-folder name is current date, yyyymm
-  fi
- fi
- mkdir -p ${SUB1}/images
- ln -snf ${SUB1}/images images
- echo "A temporary symlink created: images -> ${SUB1}/images"
+    local post_file="$1"
+    local subfolder="$2"
+    local preset_tag="$3"
+    
+    get_current_tags() {
+        grep -o '\-\-RawTags: .*' ${post_file} | tail -n 1 | tr ',' ' ' | tr -s ' ' | \
+        sed -e 's%^--RawTags: %%' -e 's%-->$%%'
+    }
+    
+    update_tags() {
+        local new_tags="$1"
+        sed -i -e "s%--RawTags: .*-->%--RawTags: ${new_tags}-->%" ${post_file}
+    }
+    
+    tags=$(get_current_tags)
+    
+    if [ "$preset_tag" ]; then
+        tags="$preset_tag"
+    elif [ "$MODE" != "document" -o "$subfolder" == "" ]; then
+        echo -n "Available tags: "
+        echo "$tag2header" | cut -f 1 -d ' ' | tr '\n' ' '
+        echo -e "\nYour current selection: ${tags}"
+        [ "$MODE" == "document" ] && echo 'NOTE: As running in "document" mode, only ONE tag allowed per post.'
+        
+        read -p "Press ENTER to accept, or type replacement: " newtags
+        if [ "$newtags" ]; then
+            tags="$(echo -n "$newtags" | tr ',' ' ' | tr -s ' ')"
+            [ "$MODE" == "document" ] && tags="${tags%% *}"
+        fi
+    fi
+    
+    [ ! "$tags" ] && tags="$(echo "$tag2header" | cut -f 1 -d ' ' | head -n 1)"
+    
+    update_tags "$tags"
+    
+    SUB1="${subfolder:-$([ "$MODE" == "document" ] && echo "${tags%% *}" || date +%Y%m)}"
+    mkdir -p ${SUB1}/images
+    ln -snf ${SUB1}/images images
+    echo "A temporary symlink created: images -> ${SUB1}/images"
 }
 
 #parse new or edited post.
@@ -1236,86 +1311,137 @@ all_tags() {
 }
 
 # Generate the index.html with the content of the latest posts. creates index.html (replaced by all_docs.html in document mode)
+
 rebuild_index() {
     echo -n "Rebuilding the index "
     [ -e $index_file ] && rm -f $index_file
-    newindexfile=$index_file.$RANDOM
-    contentfile=$newindexfile.content
-    while [[ -f $newindexfile ]]; do 
-        newindexfile=$index_file.$RANDOM
-        contentfile=$newindexfile.content
+    
+    # Get valid posts (excluding nested CMS and index files)
+    local valid_posts=$(ls -t ./*/*.htmraw | while read -r post; do
+        [ -d ${post%/*}/cms_config ] && continue
+        [ "${post##*/}" == "index.htmraw" ] && continue
+        echo "$post"
+    done)
+    
+    local page_number=1
+    local total_posts=$(echo "$valid_posts" | wc -l)
+    local total_pages=$(( (total_posts + posts_per_page - 1) / posts_per_page ))
+    
+    echo "$valid_posts" | xargs -n$posts_per_page | while read -r chunk; do
+        local page_file
+        local temp_file="index.$RANDOM.tmp"
+        
+        if [ $page_number -eq 1 ]; then
+            page_file="$index_file"
+        else
+            page_file="index-${page_number}.html"
+        fi
+        
+        generate_index_page "$chunk" "$temp_file" "$page_number" "$total_pages"
+        
+        # Process buttons and links
+        css_button_style="button is-info is-light"
+        ibPTN="s%.*THIRDBUTTON.*%\&nbsp;<a class=\"${css_button_style}\" href=\"./${archive_index}\"><img src=\"images0/${button_history_icon}\" width=\"24\" height=\"24\" title=\"${button_history_tooltip}\" />${button_history_text}</a>%"
+        sed -i -e "$ibPTN" "$temp_file"
+        
+        ibPTN="s%.*FOURTHBUTTON.*%\&nbsp;<a class=\"${css_button_style}\" href=\"./${tags_index}\"><img src=\"images0/${button_tagsindex_icon}\" width=\"24\" height=\"24\" title=\"${button_tagsindex_tooltip}\" />${button_tagsindex_text}</a>\&nbsp;%"
+        sed -i -e "$ibPTN" "$temp_file"
+        
+        # Fix title links
+        sed -i '/"bblack"/d' "$temp_file"
+        sed -i -e 's%^<!--TITLEWITHLINK%%' -e 's%TITLEWITHLINK-->$%%' "$temp_file"
+        
+        mv "$temp_file" "$page_file"
+        chmod 644 "$page_file"
+        
+        page_number=$((page_number + 1))
     done
-
-    # Create the content file
-    {
-        n=0
-        while IFS='' read -r i0; do
-            i=${i0/.htmraw/.html}
-            [ -d ${i%/*}/cms_config ] && continue #ex: ./news/cms_config is a nested shellCMS
-            [ "${i##*/}" == "index.html" ] && continue #i=./admin/index.html, extract index.html
-            if ((n >= number_of_index_articles)); then break; fi
-            if [[ -n $cut_do ]]; then
-                part_content="$(get_html_file_content 'entry' 'entry' 'cut' <"$i" | awk "/$cut_line/ { print \"<p class=\\\"readmore\\\"><a href=\\\"$i\\\">$template_read_more</a></p>\" ; next } 1")"
-            else
-                part_content="$(get_html_file_content 'entry' 'entry' <"$i")"
-            fi
-            #170831d fix image links
-            part_sub_folder="$(dirname $i)"
-            if [ "$part_sub_folder" != "." ];then
-             echo "$part_content" | sed -e "s%src=\"images/%src=\"${part_sub_folder}/images/%"
-            else
-             echo "$part_content"
-            fi
-            echo -n "." 1>&3
-            n=$(( n + 1 ))
-        done < <(ls -t ./*/*.htmraw) # sort by date, newest first.
-        
-        feed=$blog_feed
-        if [[ -n $global_feedburner ]]; then feed=$global_feedburner; fi
-        #echo "<div id=\"all_posts\"><a href=\"$archive_index\">$template_archive</a> &mdash; <a href=\"$tags_index\">$template_tags_title</a> &mdash; <a href=\"$feed\">$template_subscribe</a></div>"
-        echo "<div id=\"all_posts\"><a href=\"$archive_index\">$template_archive</a> &mdash; <a href=\"$tags_index\">$template_tags_title</a> &mdash;  <a href=\"$feed\"><img src=\"images0/${button_rss_icon}\" width=\"24\" height=\"24\" title=\"${button_rss_tooltip}\" />${button_rss_text}</a>"
-    } 3>&1 >"$contentfile"
-
+    
     echo ""
-
-    create_html_page "$contentfile" "$newindexfile" index "$global_title" "$global_author" #170830b
-    rm "$contentfile"
-    mv "$newindexfile" "$index_file"
-    chmod 644 "$index_file"
-    #170824 BK buttons at top...
-    css_button_style="button is-info is-light" #20230424 added support for custom css button style in the headers
-    ibPTN="s%.*THIRDBUTTON.*%\&nbsp;<a class=\"${css_button_style}\" href=\"./${archive_index}\"><img src=\"images0/${button_history_icon}\" width=\"24\" height=\"24\" title=\"${button_history_tooltip}\" />${button_history_text}</a>%"
-    sed -i -e "$ibPTN" $index_file
-    ibPTN="s%.*FOURTHBUTTON.*%\&nbsp;<a class=\"${css_button_style}\" href=\"./${tags_index}\"><img src=\"images0/${button_tagsindex_icon}\" width=\"24\" height=\"24\" title=\"${button_tagsindex_tooltip}\" />${button_tagsindex_text}</a>\&nbsp;%"
-    sed -i -e "$ibPTN" $index_file
-    #ibPTN="s%.*FIFTHBUTTON.*%\&nbsp;<a href=\"$feed\"><img src=\"images0/${button_rss_icon}\" width=\"24\" height=\"24\" title=\"${button_rss_tooltip}\" />${button_rss_text}</a>%"
-    #sed -i -e "$ibPTN" $index_file
+}
+generate_index_page() {
+    local posts="$1"
+    local output_file="$2"
+    local current_page="$3"
+    local total_pages="$4"
+    
+    local content_file="${output_file}.content"
+    
+    {
+        for post in $posts; do
+            post=${post/.htmraw/.html}
+            [ -d ${post%/*}/cms_config ] && continue
+            [ "${post##*/}" == "index.html" ] && continue
+            
+            if [[ -n $cut_do ]]; then
+                part_content="$(get_html_file_content 'entry' 'entry' 'cut' <"$post" | 
+                    awk "/$cut_line/ { print \"<p class=\\\"readmore\\\"><a href=\\\"$post\\\">$template_read_more</a></p>\" ; next } 1")"
+            else
+                part_content="$(get_html_file_content 'entry' 'entry' <"$post")"
+            fi
+            
+            echo "$part_content"
+            echo -n "." 1>&3
+        done
         
-    #170901a restore href in each post title
-    sed -i '/"bblack"/d' $index_file
-    sed -i -e 's%^<!--TITLEWITHLINK%%' -e 's%TITLEWITHLINK-->$%%' $index_file
+        generate_pagination_nav "$current_page" "$total_pages"
+        
+    } 3>&1 > "$content_file"
 
+    create_html_page "$content_file" "$output_file" index "$global_title" "$global_author"
+    rm "$content_file"
+}
+
+generate_pagination_nav() {
+    local current_page="$1"
+    local total_pages="$2"
+    
+    local feed=$blog_feed
+    [[ -n $global_feedburner ]] && feed=$global_feedburner
+    
+    echo "<div class=\"content\">"
+    echo "<div class=\"content\">"
+    
+    if [ $current_page -gt 1 ]; then
+        if [ $current_page -eq 2 ]; then
+            echo "<span><a href=\"index.html\">&larr; ${newer_page_link_msg}</a></span>"
+        else
+            echo "<span><a href=\"index-$((current_page-1)).html\">&larr; ${newer_page_link_msg}</a></span>"
+        fi
+    fi
+    
+    if [ $current_page -lt $total_pages ]; then
+        echo "<span><a href=\"index-$((current_page+1)).html\">${older_page_link_msg} &rarr;</a></span>"
+    fi
+    
+    echo "</div>"
+    
+    echo "<div id=\"all_posts\"><a href=\"$archive_index\">$template_archive</a> &mdash; <a href=\"$tags_index\">$template_tags_title</a> &mdash; <a href=\"$feed\"><img src=\"images0/${button_rss_icon}\" width=\"24\" height=\"24\" title=\"${button_rss_tooltip}\" />${button_rss_text}</a></div>"
+    echo "</div>"
 }
 
 # Finds all tags referenced in one post.
 # Accepts either filename as first argument, or post content at stdin
 # Prints one line with space-separated tags to stdout.
 tags_in_post_func() {
- #sed -n "/^<p>$template_tags_line_header/{s/^<p>$template_tags_line_header//;s/<[^>]*>//g;s/[ ,]\+/ /g;p;}" "$1" | tr ', ' ' ' | sed -e 's%^ %%'
- tagsinpost="$(grep -o '\-\-RawTags: .*\-\-' "${1}" | tail -n 1 | tr ',' ' ' | tr -s ' ' | cut -f 2- -d ' ' | cut -f 1 -d '-')"
- echo "$tagsinpost"
+    local post_file="$1"
+    local tagsinpost="$(grep -o '\-\-RawTags: .*\-\-' "${post_file}" | tail -n 1 | tr ',' ' ' | tr -s ' ' | cut -f 2- -d ' ' | cut -f 1 -d '-')"
+    echo "$tagsinpost"
 }
 
 # Finds all posts referenced in a number of tags.
 # Arguments are tags
 # Prints one line with space-separated tags to stdout
+# Find all posts containing specified tags
 posts_with_tags_func() {
     [ ! $1 ] && return
+    
     for aTAG in $@
     do
-     grep --files-with-matches "<!--RawTags:.* ${aTAG}" `ls -1 ./*/*.htmraw | tr '\n' ' '` > /tmp/bashblog-posts-tagmatches
+        grep --files-with-matches "<!--RawTags:.* ${aTAG}" `ls -1 ./*/*.htmraw | tr '\n' ' '` > /tmp/bashblog-posts-tagmatches
     done
-    posts_fnd="$(sort -u /tmp/bashblog-posts-tagmatches | sed -e 's%^\./%%' -e 's%htmraw$%html%' | tr '\n' ' ')"
+    
+    local posts_fnd="$(sort -u /tmp/bashblog-posts-tagmatches | sed -e 's%^\./%%' -e 's%htmraw$%html%' | tr '\n' ' ')"
     echo "$posts_fnd"
 }
 
@@ -1328,91 +1454,168 @@ posts_with_tags_func() {
 # example:
 # rebuild_tags "one_post.html another_article.html" "example-tag another-tag"
 # mind the quotes!
+# Rebuild tag pages
 rebuild_tags() {
-    local param1
-    param1="$1"
+    local param1="$1"
+    local files
+    local tags="$2"
+    local all_tags
+    
     if (($# < 2)); then
-        # will process all files and tags
-        #files=$(ls -1 -t ./*/*.html | grep -v '/index\.html')
-        #to avoid picking up .html files in nested shellCMSs, search for .htmraw...
         files=$(ls -1 -t ./*/*.htmraw | sed -e 's%\.htmraw$%.html%')
         all_tags=yes
     else
         files="$(ls -1 -t $param1)"
-        tags=$2
     fi
+    
     echo -n "Rebuilding tag pages "
-    n=0
+    
     if [[ -n $all_tags ]]; then
         rm ./"tag_"*.html &> /dev/null
     else
         for i in $tags; do
             rm "./tag_$i.html" &> /dev/null
-            rm "./tag_${i}-*.html" &> /dev/null #170829a
+            rm "./tag_${i}-*.html" &> /dev/null
         done
     fi
-    # First we will process all files and create temporal tag files
-    # with just the content of the posts
     
-    #tag_*.html files could become enormous. cut them up...
-    #these files will count number of posts embedded in each tag_*.html
+    process_tag_files "$files" "$tags" "$all_tags"
+}
+process_tag_files() {
+    local files="$1"
+    local tags="$2"
+    local all_tags="$3"
+    
+    # Clear existing count files
     rm -f /tmp/shellcms-cnt-posts-in-* 2>/dev/null
-    tmpfile=tmp.$RANDOM
-    while [[ -f $tmpfile ]]; do tmpfile=tmp.$RANDOM; done
-    while IFS='' read -r i; do
-        [ "${i##*/}" == "index.html" ] && continue #i=./admin/index.html, extract index.html
-        echo -n "."
+    
+    fix_post_links() {
+        local tmpfile="$1"
+        local post_file="$2"
+        local part_sub_folder="$(dirname $post_file)"
+        
+        if [ "$part_sub_folder" != "." ]; then
+            sed -i -e "s%src=\"images/%src=\"${part_sub_folder}/images/%" "$tmpfile"
+        fi
+        
+        # Restore href in post title
+        sed -i '/"bblack"/d' "$tmpfile"
+        sed -i -e 's%^<!--TITLEWITHLINK%%' -e 's%TITLEWITHLINK-->$%%' "$tmpfile"
+    }
+    
+    process_file_content() {
+        local file="$1"
+        local tmpfile="$2"
         
         if [[ -n $cut_do ]]; then
-            if [ "$MODE" == "document" ];then
-             #each post is very big, insert hr, be very careful where...
-             #tmp_content2="$(sed -e '70 s%^%<hr />\n%' $i)"
-             tmp_content2="$(sed -e '/<\!-- text begin -->/,/<\!-- text end -->/ s%<[du]%\n<hr />&%g' -e '/<\!-- text begin -->/,/<\!-- text end -->/ s%<table%\n<hr /><table%g' -e '/<\!-- text begin -->/,/<\!-- text end -->/  s%<p%\n<p%g' -e '/<\!-- text begin -->/,/<\!-- text end -->/ s%<br%\n<br%g' -e '/^ *$/d' -e '80,/<\!-- text end -->/ s%<p%\n<hr /><p%' -e '80,/<\!-- text end -->/ s%<br%\n<hr /><br%' ${i})"
-             tmp_content3="$(echo "$tmp_content2" | get_html_file_content 'entry' 'entry' 'cut')"
-             echo "$tmp_content3" | awk "/$cut_line/ { print \"<p class=\\\"readmore\\\"><a href=\\\"$i\\\">$template_read_more</a></p>\" ; next } 1"  >"$tmpfile"
+            if [ "$MODE" == "document" ]; then
+                process_document_mode "$file" "$tmpfile"
             else
-             get_html_file_content 'entry' 'entry' 'cut' <"$i" | awk "/$cut_line/ { print \"<p class=\\\"readmore\\\"><a href=\\\"$i\\\">$template_read_more</a></p>\" ; next } 1" >"$tmpfile"
+                process_blog_mode "$file" "$tmpfile"
             fi
         else
-            get_html_file_content 'entry' 'entry' <"$i"  >"$tmpfile"
+            get_html_file_content 'entry' 'entry' < "$file" > "$tmpfile"
         fi
+    }
+    
+    process_document_mode() {
+        local file="$1"
+        local tmpfile="$2"
         
-        #fix image links
-        part_sub_folder="$(dirname $i)"
-        if [ "$part_sub_folder" != "." ];then
-         sed -i -e "s%src=\"images/%src=\"${part_sub_folder}/images/%" $tmpfile
-        fi
+        sed -e '/<\!-- text begin -->/,/<\!-- text end -->/ {
+            s%<[du]%\n<hr />&%g
+            s%<table%\n<hr /><table%g
+            s%<p%\n<p%g
+            s%<br%\n<br%g
+        }' \
+        -e '/^ *$/d' \
+        -e '80,/<\!-- text end -->/ {
+            s%<p%\n<hr /><p%
+            s%<br%\n<hr /><br%
+        }' "$file" | \
+        get_html_file_content 'entry' 'entry' 'cut' | \
+        add_read_more_link "$file" > "$tmpfile"
+    }
+    
+    process_blog_mode() {
+        local file="$1"
+        local tmpfile="$2"
         
-        #restore href in post title
-        sed -i '/"bblack"/d' $tmpfile
-        sed -i -e 's%^<!--TITLEWITHLINK%%' -e 's%TITLEWITHLINK-->$%%' $tmpfile
+        get_html_file_content 'entry' 'entry' 'cut' < "$file" | \
+        add_read_more_link "$file" > "$tmpfile"
+    }
+    
+    add_read_more_link() {
+        local file="$1"
+        awk "/$cut_line/ { print \"<p class=\\\"readmore\\\"><a href=\\\"$file\\\">$template_read_more</a></p>\" ; next } 1"
+    }
+    
+    process_tags() {
+        local tmpfile="$1"
+        local file="$2"
+        local tags_found="$3"
         
-        tags_fnd="$(tags_in_post_func "$i")"
-        for tag in ${tags_fnd}; do
+        for tag in ${tags_found}; do
             if [[ -n $all_tags || " $tags " == *" $tag "* ]]; then
-                #count number posts going into each tag_*, split if over 8
                 echo "" >> /tmp/shellcms-cnt-posts-in-${tag}
-                cnt_posts=$(cat /tmp/shellcms-cnt-posts-in-${tag} | wc -l)
-                split_num=`expr ${cnt_posts} / ${number_of_index_articles} + 1`
-                [ $split_num -gt 9 ] && continue 2 #just in case have 1,000s of posts! 180210
+                local cnt_posts=$(cat /tmp/shellcms-cnt-posts-in-${tag} | wc -l)
+                local split_num=$((cnt_posts / number_of_index_articles + 1))
+                [ $split_num -gt 9 ] && continue 2
                 cat "$tmpfile" >> "tag_${tag}-${split_num}".tmp.html
             fi
         done
+    }
+    
+    # Main processing loop
+    local tmpfile=tmp.$RANDOM
+    while [[ -f $tmpfile ]]; do 
+        tmpfile=tmp.$RANDOM
+    done
+    
+    while IFS='' read -r i; do
+        [ "${i##*/}" == "index.html" ] && continue
+        echo -n "."
+        
+        process_file_content "$i" "$tmpfile"
+        fix_post_links "$tmpfile" "$i"
+        
+        local tags_fnd="$(tags_in_post_func "$i")"
+        process_tags "$tmpfile" "$i" "$tags_fnd"
+        
     done <<< "$files"
+    
     rm "$tmpfile"
-    # Now generate the tag files with headers, footers, etc
+    finalize_tag_pages
+}
+
+process_post_content() {
+    local tmpfile="$1"
+    local post_file="$2"
+    local part_sub_folder="$(dirname $post_file)"
+    
+    if [ "$part_sub_folder" != "." ]; then
+        sed -i -e "s%src=\"images/%src=\"${part_sub_folder}/images/%" "$tmpfile"
+    fi
+    
+    # Restore href in post title
+    sed -i '/"bblack"/d' "$tmpfile"
+    sed -i -e 's%^<!--TITLEWITHLINK%%' -e 's%TITLEWITHLINK-->$%%' "$tmpfile"
+}
+
+finalize_tag_pages() {
     while IFS='' read -r i; do
         tagname=${i#./"tag_"}
         tagname=${tagname%.tmp.html}
-        #ex: tagname=admin-2
-        cnt_splits=${tagname/*-/} #ex: 2
-        realtagname=${tagname/-*/} #ex: admin
+        
+        cnt_splits=${tagname/*-/}
+        realtagname=${tagname/-*/}
         num_splits=$(ls -1 tag_${realtagname}-*.tmp.html | wc -l)
-        [ $cnt_splits -eq 1 ] && tagname="$realtagname" #leave off the -number
-        #this func compares cnt_splits and num_splits, will create link to next page...
-        create_html_page "$i" "tag_${tagname}.html" tags "$global_title &mdash; $template_tag_title \"$tagname\"" "$global_author" #170830b
+        [ $cnt_splits -eq 1 ] && tagname="$realtagname"
+        
+        create_html_page "$i" "tag_${tagname}.html" tags "$global_title &mdash; $template_tag_title \"$tagname\"" "$global_author"
     done < <(ls -t ./tag_*.tmp.html 2>/dev/null)
-    rm -f ./tag_*.tmp.html #must delete these after the while loop.
+    
+    rm -f ./tag_*.tmp.html
     echo
 }
 
@@ -1531,7 +1734,7 @@ create_includes() {
     css_style_banner_outer_container="column"
     css_style_banner_picture_container="column is-narrow is-vcentered ml-3 pb-0"
     css_style_banner_text_container="column is-narrow ml-3 pr-0 pb-0"
-    banner_picture="sleep-svgrepo-com.svg"
+    banner_picture="sit-svgrepo-com.svg"
     css_style_figure_parameters="image is-128x128"
     css_style_title_size="is-size-2"
     echo "<div class=\"${css_style_container}\">" > ".title.html"    
@@ -1671,7 +1874,7 @@ do_main() {
  global_variables
  [[ -f $global_config ]] && source "$global_config" &> /dev/null 
  global_variables_check
- #EDITOR="$EDITOR0" #20211201
+ EDITOR="$EDITOR0" #20211201
  
  #20230421: fix  editor with switches(options) was not working properly because next validation, sanitizing the editor variable first
 EDITORALL="$EDITOR"
@@ -1758,3 +1961,4 @@ EDITORNOOPT="${EDITORALL%% *}"
 # MAIN
 do_main "$@"
 ###end###
+

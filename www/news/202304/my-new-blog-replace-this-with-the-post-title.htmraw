@@ -5,15 +5,12 @@
 
   </head>
   <body>
-    <h1>My new blog?</h1>
-    <p>Lets start posting raw things here and see</p>
+    <h1>My new blog? Replace this with the post title</h1>
+    <p>Lets start posting raw things here and see. Here goes your content</p>
     <br />
     
-
-<!--RawTags: linux-->
+<!--RawTags: general-->
   
-
 </body>
-
 
 </html>

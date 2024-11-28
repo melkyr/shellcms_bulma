@@ -1,2 +1,6 @@
 <!-- separated out the footer text, so can change without rebuilding pages -->
-<iframe src="css0/foot.htm" scrolling="no" frameborder="0" marginwidth="0" marginheight="0"></iframe>
+<div class="column is-full">
+<div class="content">
+    <iframe src="css0/foot.htm" scrolling="no" frameborder="0" marginwidth="0" marginheight="0" class="has-text-centered" style="width:100%; height:100px;"></iframe>
+</div>
+</div>

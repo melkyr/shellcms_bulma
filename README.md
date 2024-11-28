@@ -40,10 +40,13 @@ Besides we have also the original benefits of shellCMS
 
 Advantages of a static site
 
-    Very secure
-    Very low server load
-    Very fast page loading
-    Site "already archived"
+    Security: Static sites are very secure because they do not require server-side scripting or database connections, which are often targets for cyber attacks. In contrast, dynamic sites with server-side scripting and database connections can be more vulnerable to security breaches.
+
+    Low server load: Static sites are generated and stored as simple HTML, CSS, and JavaScript files on a server. This means that they require very little server processing power to serve up to visitors, which can result in significant cost savings for website owners.
+
+    Fast page loading: Because static sites are simple HTML files that don't require complex server-side processing, they typically load much faster than dynamic sites. This means that visitors to a static site will generally experience faster page load times, resulting in a better user experience.
+
+    Already archived: Because static sites are essentially just collections of HTML, CSS, and JavaScript files, they can be easily archived and stored on other servers or services. This means that even if the original site goes offline, visitors can still access a cached version of the site, which can be useful for research or historical purposes.
 
 As there is no database, your site is "already archived" on your local PC. You can easily move your site to another remote host by uploading the files to it.
 

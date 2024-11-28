@@ -1,24 +1,22 @@
 <?xml version="1.0" encoding="UTF-8" ?>
 <rss version="2.0" xmlns:atom="http://www.w3.org/2005/Atom" xmlns:dc="http://purl.org/dc/elements/1.1/">
-<channel><title>My News</title><link>http://adevjournal.info/news/index.html</link>
-<description>Technology and Linux news</description><language>en</language>
-<lastBuildDate>Tue, 25 Apr 2023 12:24:09 -0500</lastBuildDate>
-<pubDate>Tue, 25 Apr 2023 12:24:09 -0500</pubDate>
+<channel><title>shellCMS_bulma</title><link>http://adevjournal.info/news/index.html</link>
+<description>A static html/css site generator powered by bash</description><language>en</language>
+<lastBuildDate>Tue, 25 Apr 2023 21:55:12 -0500</lastBuildDate>
+<pubDate>Tue, 25 Apr 2023 21:55:12 -0500</pubDate>
 <atom:link href="http://adevjournal.info/news/feed.rss" rel="self" type="application/rss+xml" />
 <item><title>
-My new blog?
+My new blog? Replace this with the post title
 </title><description><![CDATA[
-    <p>Lets start posting raw things here and see</p>
+    <p>Lets start posting raw things here and see. Here goes your content</p>
     <br />
     
-
-<!--RawTags: linux-->
+<!--RawTags: general-->
   
-
-<p>Tags: <a class="tag is-info is-light"href='../tag_linux.html'>linux</a></p>
+<p>Tags: <a class="tag is-info is-light"href='../tag_general.html'>general</a></p>
 <!-- text end -->
-]]></description><link>http://adevjournal.info/news/202304/my-new-blog.html</link>
-<guid>http://adevjournal.info/news/./202304/my-new-blog.html</guid>
+]]></description><link>http://adevjournal.info/news/202304/my-new-blog-replace-this-with-the-post-title.html</link>
+<guid>http://adevjournal.info/news/./202304/my-new-blog-replace-this-with-the-post-title.html</guid>
 <dc:creator></dc:creator>
-<pubDate>Tue, 25 Apr 2023 12:24:09 -0500</pubDate></item>
+<pubDate>Tue, 25 Apr 2023 21:45:27 -0500</pubDate></item>
 </channel></rss>

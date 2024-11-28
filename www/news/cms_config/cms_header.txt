@@ -4,5 +4,7 @@
 <meta http-equiv="Content-type" content="text/html;charset=UTF-8" />
 <meta name="viewport" content="width=device-width, initial-scale=1">
 <!-- BK 20210830 changed inline to separate css file... -->
-<link rel="stylesheet" href="https://cdn.jsdelivr.net/npm/bulma@0.9.4/css/bulma.min.css">
+<link rel="stylesheet" href="../css0/spectre.css">
+<link rel="stylesheet" href="../css0/spectre-exp.css">
+<link rel="stylesheet" href="../css0/spectre-icons.css">
 <link rel="alternate" type="application/rss+xml" title="Subscribe to this page..." href="feed.rss" />

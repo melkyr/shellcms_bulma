@@ -176,12 +176,12 @@ global_variables() {
 
     # Change this to your disqus username to use disqus for comments
     global_disqus_username=""
-    posts_per_page=9
+    posts_per_page=5
 
     # Blog generated files
     # index page of blog (it is usually good to use "index.html" here)
     index_file="index.html"
-    number_of_index_articles="8"
+    number_of_index_articles="10"
     # global archive
     archive_index="all_posts.html"
     tags_index="all_tags.html"
@@ -1410,11 +1410,8 @@ generate_index_page() {
             fi
             #170831d fix image links
             part_sub_folder="$(dirname $post)"
-            if [ "$part_sub_folder" != "." ];then
-             echo "$part_content" | sed -e "s%src=\"images/%src=\"${part_sub_folder}/images/%"
-            else
-             echo "$part_content"
-            fi
+            part_content="$(fix_image_links "$part_content" "$part_sub_folder")"
+
             
             echo "$part_content"
             echo -n "." 1>&3
@@ -1427,6 +1424,18 @@ generate_index_page() {
     create_html_page "$content_file" "$output_file" index "$global_title" "$global_author"
     rm "$content_file"
 }
+# Function to fix image links for a post
+fix_image_links() {
+    local content="$1"
+    local sub_folder="$2"
+    
+    if [ "$sub_folder" != "." ]; then
+        echo "$content" | sed -e "s#src=\"images/#src=\"${sub_folder}/images/#g"
+    else
+        echo "$content"
+    fi
+}
+
 
 generate_pagination_nav() {
     local current_page="$1"

@@ -21,6 +21,7 @@
 #20210830 have removed the hit counter.
 #20211201 support bluegriffon. 20220520 fix.
 #20230423 Fix from commands with option switches issue. Added support for helix/vscode
+#20241124 Refactor tags. Refactored create_html_page(). Split blog entries by a global number of posts.
 
 # Displays the help.
 usage_func() {
@@ -175,7 +176,7 @@ global_variables() {
 
     # Change this to your disqus username to use disqus for comments
     global_disqus_username=""
-    posts_per_page=4
+    posts_per_page=9
 
     # Blog generated files
     # index page of blog (it is usually good to use "index.html" here)
@@ -478,62 +479,90 @@ get_html_file_content() {
 #	"keep" to keep old filename
 #	leave empty for default behavior (edit only text part and change name)
 edit_func() {
- #remove leading "./", example: ./shellcms/this-is-a-post.htmraw
- file1=${1#./}
- file1_sans_ext=${file1%%.*}
- [ "${file1/*./}" != "htmraw" ] && echo "ERROR: File ${file1} is not .htmraw" && exit -1
- [ ! -f ${file1_sans_ext}.htmraw ] && echo "ERROR: File ${file1_sans_ext}.htmraw does not exist" && exit -1
- SUBFOLDER="${file1_sans_ext/\/*/}"
- 
- # Original post timestamp
- edit_timestamp=$(LC_ALL=C date -r "${file1_sans_ext}.html" +"$date_format_full" )
- touch_timestamp=$(LC_ALL=C date -r "${file1_sans_ext}.html" +"$date_format_timestamp")
- tags_before=$(tags_in_post_func "${file1_sans_ext}.html")
- 
- ask_tags_func $file1 "$SUBFOLDER" "" #creates temp 'images' symlink, sets $tags
- # editing markup file
- ${EDITOREXE} ${PWD}/$file1 2>/dev/null
- 
- #crap, SM Composer is set for "prettyprint" but sometimes totally screws up,
- #generates almost everything on one line. make sure these are on new lines:
- sed -i -e 's%<body>.*<h1>%\n<body>\n<h1>%' ${file1}
- sed -i -e 's%<!--RawTags%\n<!--RawTags%' -e 's%</body>%\n</body>%' -e 's%</html>%\n</html>%' ${file1}
- 
- #it is unlikely, but possible, that "<!--RawTags ..." line got deleted in editor
- if ! grep '\-\-RawTags: ' ${file1} >/dev/null ; then
-  sed -i -e "s%</body>%<!--RawTags: ${tags}-->\n</body>%" ${file1}
- fi
- 
- #precaution, save the post somewhere:
- cp -f ${file1} /tmp/shellcms-post-bak
- 
- sed '1,/<body>/d;/<\/body>/Q' ${file1} > .tmpfile #leave only inside body tags.
- filename=${file1_sans_ext}.html
- #170831c document mode, set timestamp to latest edit...
- [ "$MODE" == "document" ] && edit_timestamp=$(LC_ALL=C date -r "${file1_sans_ext}.htmraw" +"$date_format_full" )
-
- rm -f "$filename"
- if [[ $2 == keep ]]; then
-  parse_file_func ".tmpfile" "$edit_timestamp" "$filename"
- else
-  parse_file_func ".tmpfile" "$edit_timestamp" # this command sets $filename as the html processed file
-  mv -f "$file1" "${filename%%.*}.htmraw" 2>/dev/null
- fi
- rm -f .tmpfile
- rm -f images #remove temporary symlink.
-
- touch -t "$touch_timestamp" "$filename"
- touch -t "$touch_timestamp" "$file1"
- chmod 644 "$filename"
- echo "Posted $filename"
- [ "${filename##*/}" == "index.html" ] && return 0 #category-index pages are a special case, do not rebuild tag_*.html.
- tags_after=$(tags_in_post_func "$filename")
- relevant_tags=$(echo "$tags_before $tags_after" | tr ',' ' ' | tr ' ' '\n' | sort -u | tr '\n' ' ')
- if [[ ! -z $relevant_tags ]]; then
-  #posts are in sub-folders, including $filename
-  relevant_posts="$(posts_with_tags_func $relevant_tags)"
-  rebuild_tags "$relevant_posts" "$relevant_tags"
- fi
+    local file1=${1#./}
+    local edit_mode="$2"
+    local file_sans_ext=${file1%%.*}
+    local filename
+    local edit_timestamp
+    local touch_timestamp
+    local tags
+    
+    validate_file() {
+        [ "${file1/*./}" != "htmraw" ] && echo "ERROR: File ${file1} is not .htmraw" && exit -1
+        [ ! -f ${file_sans_ext}.htmraw ] && echo "ERROR: File ${file_sans_ext}.htmraw does not exist" && exit -1
+    }
+    
+    get_timestamps() {
+        edit_timestamp=$(LC_ALL=C date -r "${file_sans_ext}.html" +"$date_format_full")
+        touch_timestamp=$(LC_ALL=C date -r "${file_sans_ext}.html" +"$date_format_timestamp")
+    }
+    
+    process_edit() {
+        local subfolder="${file_sans_ext/\/*/}"
+        ask_tags_func "${file1}" "$subfolder"
+        ${EDITOREXE} ${PWD}/${file1} 2>/dev/null
+        format_content "${file1}"
+    }
+    
+    format_content() {
+        local file="$1"
+        sed -i -e 's%<body>.*<h1>%\n<body>\n<h1>%' "$file"
+        sed -i -e 's%<!--RawTags%\n<!--RawTags%' -e 's%</body>%\n</body>%' -e 's%</html>%\n</html>%' "$file"
+        
+        if ! grep '\-\-RawTags: ' "$file" >/dev/null ; then
+            sed -i -e "s%</body>%<!--RawTags: ${tags}-->\n</body>%" "$file"
+        fi
+    }
+    
+    process_post() {
+    # Create backup directory if it doesn't exist
+    local backup_dir="/tmp/shellcms-$(dirname ${file1})"
+    mkdir -p "$backup_dir"
+    
+    # Backup the file
+    cp -f "${file1}" "${backup_dir}/$(basename ${file1}).bak"
+    
+    # Process the content
+    sed '1,/<body>/d;/<\/body>/Q' "${file1}" > .tmpfile
+    
+    if [[ $edit_mode == keep ]]; then
+        parse_file_func ".tmpfile" "$edit_timestamp" "${file_sans_ext}.html"
+    else
+        parse_file_func ".tmpfile" "$edit_timestamp"
+        mv -f "${file1}" "${filename%%.*}.htmraw" 2>/dev/null
+    fi
+    
+    rm -f .tmpfile
+    rm -f images
+    }
+    
+    update_timestamps() {
+        touch -t "$touch_timestamp" "$filename"
+        touch -t "$touch_timestamp" "${filename/.html/.htmraw}"
+        chmod 644 "$filename"
+    }
+    
+    process_tags() {
+        [ "${filename##*/}" == "index.html" ] && return 0
+        
+        local tags_before=$(tags_in_post_func "${filename/.html/.htmraw}")
+        local tags_after=$(tags_in_post_func "$filename")
+        local relevant_tags=$(echo "$tags_before $tags_after" | tr ',' ' ' | tr ' ' '\n' | sort -u | tr '\n' ' ')
+        
+        if [[ ! -z $relevant_tags ]]; then
+            local relevant_posts="$(posts_with_tags_func $relevant_tags)"
+            rebuild_tags "$relevant_posts" "$relevant_tags"
+        fi
+    }
+    
+    validate_file
+    get_timestamps
+    process_edit
+    process_post
+    update_timestamps
+    process_tags
+    
+    echo "Posted $filename"
 }
 
 # Create a Twitter summary (twitter "card") for the post
@@ -1379,6 +1408,13 @@ generate_index_page() {
             else
                 part_content="$(get_html_file_content 'entry' 'entry' <"$post")"
             fi
+            #170831d fix image links
+            part_sub_folder="$(dirname $post)"
+            if [ "$part_sub_folder" != "." ];then
+             echo "$part_content" | sed -e "s%src=\"images/%src=\"${part_sub_folder}/images/%"
+            else
+             echo "$part_content"
+            fi
             
             echo "$part_content"
             echo -n "." 1>&3
@@ -1961,4 +1997,3 @@ EDITORNOOPT="${EDITORALL%% *}"
 # MAIN
 do_main "$@"
 ###end###
-

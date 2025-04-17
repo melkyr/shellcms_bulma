@@ -13,6 +13,7 @@ The modifications included shellCMS_bulma include:
     Added support for page SVG icons
     The option to have a SVG-picture banner instead of a top-banner.png
     Custom posts with responsive content while keeping all the benefits from the original shellCMS
+    Added support for gum / dialog for interactive prompts through -i and -igum switches
     
 Besides we have also the original benefits of shellCMS
 

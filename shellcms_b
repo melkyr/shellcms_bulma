@@ -22,6 +22,7 @@
 #20211201 support bluegriffon. 20220520 fix.
 #20230423 Fix from commands with option switches issue. Added support for helix/vscode
 #20241124 Refactor tags. Refactored create_html_page(). Split blog entries by a global number of posts.
+#20250417 Added switches -i and -igum to support TUI
 
 # Displays the help.
 usage_func() {
@@ -57,6 +58,24 @@ err_exit() {
  exit 1
 }
 
+# 1) parse -i / -igum
+INTERACTIVE=0
+USE_GUM=0
+if [[ $1 == "-igum" ]]; then
+  INTERACTIVE=1; USE_GUM=1; shift
+elif [[ $1 == "-i" ]]; then
+  INTERACTIVE=1; USE_GUM=0; shift
+fi
+
+if (( INTERACTIVE )); then
+  if (( USE_GUM )); then
+    command -v gum >/dev/null || { echo "ERROR: gum not installed"; exit 1; }
+  else
+    command -v dialog >/dev/null || { echo "ERROR: dialog not installed"; exit 1; }
+  fi
+fi
+
+do_initial_setup(){
 PATH0="${1#./}" #get rid of any leading ./
 PATHcms="${PATH0/%\//}" #get rid of any trailing /
 [ ! -f ${PATHcms}/cms_config/cms_skeleton.txt ] && err_exit "First parameter must be relative path to shellCMS installation. Aborting"
@@ -129,7 +148,7 @@ set_baseline_editor
 #20230423
 
 EDITOR0="$EDITOR"
-
+}
 
 # This function will load all the variables defined here. They might be overridden
 # by the 'global_config' file contents.
@@ -911,41 +930,131 @@ ask_tags_func() {
     local post_file="$1"
     local subfolder="$2"
     local preset_tag="$3"
-    
+
+    # helper to grab current tags from the file
     get_current_tags() {
-        grep -o '\-\-RawTags: .*' ${post_file} | tail -n 1 | tr ',' ' ' | tr -s ' ' | \
-        sed -e 's%^--RawTags: %%' -e 's%-->$%%'
+        grep -o '\-\-RawTags: .*' "${post_file}" \
+          | tail -n1 \
+          | sed -e 's/^--RawTags: //' -e 's/-->$//' \
+          | tr ',' ' ' \
+          | tr -s ' '
     }
-    
+    # helper to write them back
     update_tags() {
         local new_tags="$1"
-        sed -i -e "s%--RawTags: .*-->%--RawTags: ${new_tags}-->%" ${post_file}
+        sed -i \
+            -e "s%--RawTags: .*-->%--RawTags: ${new_tags}-->%" \
+            "${post_file}"
     }
-    
-    tags=$(get_current_tags)
-    
-    if [ "$preset_tag" ]; then
+
+    # 1) start with whatever was already in the file
+    local tags
+    tags="$(get_current_tags)"
+
+    # 2) override if a preset was passed in
+    if [[ -n "$preset_tag" ]]; then
         tags="$preset_tag"
-    elif [ "$MODE" != "document" -o "$subfolder" == "" ]; then
-        echo -n "Available tags: "
-        echo "$tag2header" | cut -f 1 -d ' ' | tr '\n' ' '
-        echo -e "\nYour current selection: ${tags}"
-        [ "$MODE" == "document" ] && echo 'NOTE: As running in "document" mode, only ONE tag allowed per post.'
-        
-        read -p "Press ENTER to accept, or type replacement: " newtags
-        if [ "$newtags" ]; then
-            tags="$(echo -n "$newtags" | tr ',' ' ' | tr -s ' ')"
-            [ "$MODE" == "document" ] && tags="${tags%% *}"
+
+    # 3) only prompt if not in document‐mode *or* subfolder is empty
+    elif [[ "$MODE" != "document" || -z "$subfolder" ]]; then
+
+        if (( INTERACTIVE )); then
+        # build the tag key list as before…
+        mapfile -t TAG_KEYS   < <(echo "$tag2header" | cut -f1 -d' ')
+        mapfile -t TAG_LABELS < <(echo "$tag2header" | cut -f2- -d' ')
+
+            if (( USE_GUM )); then
+                # 1) select zero or more existing tags
+                if [[ "$MODE" == "document" ]]; then
+                    picked=$(gum choose "${TAG_KEYS[@]}")
+                else
+                    picked=$(gum choose --no-limit "${TAG_KEYS[@]}")
+                fi
+
+                # 2) optionally type in brand‐new tags (comma‑separated)
+                extra=$(gum input \
+                    --placeholder "Add new tags (comma‑separated), or leave blank" \
+                    --value "")
+
+            else
+                # 1) dialog checklist/radiolist as before
+                local dlg_type
+                if [[ "$MODE" == "document" ]]; then
+                    dlg_type=(--radiolist "Select ONE tag:" 0 0 0)
+                else
+                    dlg_type=(--checklist "Select one or more tags:" 0 0 0)
+                fi
+
+                local dlg_args=()
+                for i in "${!TAG_KEYS[@]}"; do
+                    key=${TAG_KEYS[i]}; label=${TAG_LABELS[i]}
+                    state=off
+                    [[ " $tags " == *" $key "* ]] && state=on
+                    dlg_args+=( "$key" "$label" "$state" )
+                done
+
+                picked=$(dialog --stdout "${dlg_type[@]}" "${dlg_args[@]}")
+                extra=$(dialog --stdout \
+                    --inputbox "Add new tags (comma‑separated), or leave blank:" \
+                    0 0 "")
+            fi
+
+        # 3) merge picked + extra, normalize, dedupe
+        #    turn space lists into comma lists, split commas into spaces
+        # after picking & extra:
+        combined=$(printf '%s\n%s' "$picked" "$extra" \
+        | tr '\n' ' '    \  # turn all newlines into spaces
+        | tr ',' ' '      \  # split commas into spaces
+        | tr -s ' ')         # squeeze multiple spaces down
+
+        # build array & dedupe exactly as before
+        read -r -a arr <<<"$combined"
+        # use associative array for uniqueness
+        declare -A seen=()
+        tags_list=()
+        for t in "${arr[@]}"; do
+            [[ -n "$t" && -z "${seen[$t]}" ]] && {
+                seen[$t]=1
+                tags_list+=( "$t" )
+            }
+        done
+        # if document‐mode, only keep the first
+        if [[ "$MODE" == "document" && "${#tags_list[@]}" -gt 1 ]]; then
+            tags_list=( "${tags_list[0]}" )
+        fi
+        # final CSV
+        tags=$(IFS=, ; echo "${tags_list[*]}")
+
+
+        else
+            # fallback to your original echo/read
+            echo -n "Available tags: "
+            echo "$tag2header" | cut -f1 -d' ' | tr '\n' ' '
+            echo -e "\nYour current selection: ${tags}"
+            [[ "$MODE" == "document" ]] && \
+              echo 'NOTE: In "document" mode only ONE tag allowed per post.'
+            read -p "Press ENTER to accept, or type replacement: " newtags
+            if [[ -n "$newtags" ]]; then
+                tags="$(echo -n "$newtags" | tr ',' ' ' | tr -s ' ')"
+                [[ "$MODE" == "document" ]] && tags="${tags%% *}"
+            fi
         fi
     fi
-    
-    [ ! "$tags" ] && tags="$(echo "$tag2header" | cut -f 1 -d ' ' | head -n 1)"
-    
+
+
+    # 4) if still empty, pick the very first tag in your list
+    if [[ -z "$tags" ]]; then
+        tags="$(echo "$tag2header" | cut -f1 -d' ' | head -n1)"
+    fi
+
+    # 5) write back and recreate the symlink
     update_tags "$tags"
-    
-    SUB1="${subfolder:-$([ "$MODE" == "document" ] && echo "${tags%% *}" || date +%Y%m)}"
-    mkdir -p ${SUB1}/images
-    ln -snf ${SUB1}/images images
+
+    SUB1="${subfolder:-$([ "$MODE" == "document" ] \
+               && echo "${tags%%,*}" \
+               || date +%Y%m)}"
+    mkdir -p "${SUB1}/images"
+    ln -snf "${SUB1}/images" images
     echo "A temporary symlink created: images -> ${SUB1}/images"
 }
 
@@ -1081,8 +1190,24 @@ write_entry_func() {
   
   chmod 644 "$filename"
   
-  echo -n "[P]ost this entry, [E]dit again, [D]raft for later? (p/E/d) "
-  read -r post_status
+if (( INTERACTIVE )); then
+    if (( USE_GUM )); then
+        # gum multi‑choice (but limit to 1)
+        post_status=$(gum choose --limit=1 p e d)
+    else
+        # dialog radiolist
+        post_status=$(dialog --stdout --radiolist "Choose action:" 0 0 0 \
+        p "Post this entry" on \
+        e "Edit again"      off \
+        d "Draft for later" off)
+    fi
+  # if user hit ESC or closed dialog, exit
+  [[ $? -ne 0 || -z $post_status ]] && exit
+else
+  # non‑interactive CLI fallback
+  read -r -p "[P]ost, [E]dit again, [D]raft? (p/E/d) " post_status
+fi
+
   if [[ $post_status == d || $post_status == D ]]; then
    mkdir -p "drafts/"
    chmod 700 "drafts/"
@@ -1824,6 +1949,16 @@ create_includes() {
 delete_includes() {
     rm ".title.html" ".footer.html" ".header.html"
 }
+rebuild_all_entries_interactive(){
+    if (( INTERACTIVE && USE_GUM )); then
+    gum spin --spinner dot --title "Building site…" -- \
+        rebuild_all_entries
+    else
+        rebuild_all_entries
+    fi
+
+}
+
 
 # Regenerates all the .html posts from the .htmraw posts
 rebuild_all_entries() {
@@ -1862,20 +1997,44 @@ rebuild_all_entries() {
 
 # Delete all generated content
 reset_func() {
-    echo "Are you sure you want to delete all posts? Please write \"Yes, I am!\" "
-    read -r line
-    if [[ $line == "Yes, I am!" ]]; then
-        rm .*.html ./*.html ./*.css ./*.rss &> /dev/null
-        for i in `ls -1 ./*/*.html ./*/*.htmraw`
-        do
-            [ -d ${i%/*}/cms_config ] && continue #ex: ./news/cms_config is a nested shellCMS
-            rm -f $i
-        done
-        echo
-        echo "Deleted all posts, and feeds."
-        echo "Kept your old '.backup.tar.gz' just in case, please delete it manually if needed."
+    local confirm
+
+    if (( INTERACTIVE )); then
+        if (( USE_GUM )); then
+            confirm=$(gum confirm "Are you sure you want to delete all posts?")
+        else
+            dialog --yesno "Are you sure you want to delete all posts?" 8 50
+            confirm=$?
+        fi
+
+        if { (( USE_GUM )) && $confirm; } || { (( !USE_GUM )) && (( confirm == 0 )); }; then
+            rm .*.html ./*.html ./*.css ./*.rss &> /dev/null
+            for i in ./*/*.html ./*/*.htmraw; do
+                [[ -d ${i%/*}/cms_config ]] && continue  # Skip nested shellCMS
+                rm -f "$i"
+            done
+            echo
+            echo "Deleted all posts, and feeds."
+            echo "Kept your old '.backup.tar.gz' just in case, please delete it manually if needed."
+        else
+            echo "Phew! You dodged a bullet there. Nothing was modified."
+        fi
+
     else
-        echo "Phew! You dodged a bullet there. Nothing was modified."
+        echo "Are you sure you want to delete all posts? Please write \"Yes, I am!\""
+        read -r line
+        if [[ $line == "Yes, I am!" ]]; then
+            rm .*.html ./*.html ./*.css ./*.rss &> /dev/null
+            for i in ./*/*.html ./*/*.htmraw; do
+                [[ -d ${i%/*}/cms_config ]] && continue
+                rm -f "$i"
+            done
+            echo
+            echo "Deleted all posts, and feeds."
+            echo "Kept your old '.backup.tar.gz' just in case, please delete it manually if needed."
+        else
+            echo "Phew! You dodged a bullet there. Nothing was modified."
+        fi
     fi
 }
 
@@ -1955,31 +2114,46 @@ EDITORNOOPT="${EDITORALL%% *}"
   fi
  fi
 
- if [ "$2" == "post" ];then
-  if [ $3 ];then
-   [ "${3##*.}" != "htmraw" ] && err_exit "'${3}' is required to be .htmraw"
-   if [ "${3/\/*/}" == "drafts" ];then
-    [ ! -f ./$3 ] && err_exit "'./${3}' does not exist in 'drafts' folder"
-   else
-    if [ -f ./$3 ];then
-     echo
-     echo "WARNING: file '${3}' already exists"
-     echo "The 'post' command is for creating a new post. To edit an existing post,"
-     echo "you must use the 'edit' command. If you want to keep going, and completely"
-     echo "replace the existing file, press 'y' then ENTER, anything else to abort."
-     echo -n "Type your reponse: "
-     read yourresponse
-     [ "$yourresponse" != "y" ] && exit 1
+if [[ "$2" == "post" ]]; then
+  if [[ -n "$3" ]]; then
+    [[ "${3##*.}" != "htmraw" ]] && err_exit "'${3}' is required to be .htmraw"
+
+    if [[ "${3%%/*}" == "drafts" ]]; then
+      [[ ! -f "./$3" ]] && err_exit "'./${3}' does not exist in 'drafts' folder"
+    else
+      if [[ -f "./$3" ]]; then
+        echo
+        echo "WARNING: file '${3}' already exists"
+        echo "The 'post' command is for creating a new post. To edit an existing post,"
+        echo "you must use the 'edit' command. If you want to keep going, and completely"
+        echo "replace the existing file, confirm below."
+
+        local overwrite_ok=0
+
+        if (( INTERACTIVE )); then
+          if (( USE_GUM )); then
+            gum confirm "Replace '${3}'? This will delete its current content." && overwrite_ok=1
+          else
+            dialog --yesno "File '${3}' already exists.\nDo you want to overwrite it?" 10 60
+            (( $? == 0 )) && overwrite_ok=1
+          fi
+        else
+          echo -n "Press 'y' then ENTER to confirm, anything else to cancel: "
+          read -r yourresponse
+          [[ "$yourresponse" == "y" ]] && overwrite_ok=1
+        fi
+
+        (( !overwrite_ok )) && exit 1
+      fi
     fi
-   fi
   fi
- fi
+fi
 
  [[ $2 == reset ]] && reset_func && exit
 
  create_includes
  [[ $2 == post ]] && write_entry_func $@
- [[ $2 == rebuild ]] && rebuild_all_entries && rebuild_tags
+ [[ $2 == rebuild ]] && rebuild_all_entries_interactive && rebuild_tags
  if [[ $2 == delete ]];then
   nameonly="$(basename ${3} | cut -f 1 -d '.')"
   echo "Deleting: ${nameonly}.html and .htmraw"
@@ -2004,5 +2178,52 @@ EDITORNOOPT="${EDITORALL%% *}"
 
 
 # MAIN
-do_main "$@"
+
+if (( INTERACTIVE )); then
+  # —— Prompt for path ——
+  if (( USE_GUM )); then
+    SHELLCMS_PATH=$(gum input --placeholder "shellCMS path" --value "www/news")
+  else
+    SHELLCMS_PATH=$(dialog --stdout --inputbox "Path to shellCMS:" 0 0 "www/news")
+  fi
+  (( $? != 0 )) && exit
+
+  # —— Prompt for command ——
+  if (( USE_GUM )); then
+    CMD=$(gum choose post edit delete rebuild reset list tags)
+  else
+    CMD=$(dialog --stdout \
+      --menu "Choose command:" 0 0 0 \
+      post    "New post / continue draft" \
+      edit    "Edit existing post" \
+      delete  "Delete a post" \
+      rebuild "Rebuild site" \
+      reset   "Delete all posts" \
+      list    "List posts" \
+      tags    "List tags")
+  fi
+  [[ -z $CMD ]] && exit
+
+  # —— If the command needs a filename ——
+  ARGS=( "$SHELLCMS_PATH" "$CMD" )
+  if [[ "$CMD" =~ ^(edit|delete)$ ]]; then
+    if (( USE_GUM )); then
+      TARGET=$(gum input --placeholder "folder/filename" --value "${CMD}/new-post.htmraw")
+    else
+      TARGET=$(dialog --stdout \
+        --inputbox "Enter folder/filename for '$CMD':" 0 0 "${CMD}/new-post.htmraw")
+    fi
+    (( $? != 0 )) && exit
+    ARGS+=( "$TARGET" )
+  fi
+
+  # —— Finally invoke do_main with our rebuilt args ——
+  do_initial_setup "${ARGS[@]}"
+  do_main "${ARGS[@]}"
+
+else
+  # non‑interactive: just pass everything straight through
+  do_initial_setup "$@"
+  do_main "$@"
+fi
 ###end###

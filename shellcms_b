@@ -1002,10 +1002,7 @@ ask_tags_func() {
         # 3) merge picked + extra, normalize, dedupe
         #    turn space lists into comma lists, split commas into spaces
         # after picking & extra:
-        combined=$(printf '%s\n%s' "$picked" "$extra" \
-        | tr '\n' ' '    \  # turn all newlines into spaces
-        | tr ',' ' '      \  # split commas into spaces
-        | tr -s ' ')         # squeeze multiple spaces down
+        combined=$(printf '%s\n%s' "$picked" "$extra" | tr '\n' ' '| tr ',' ' '| tr -s ' ')
 
         # build array & dedupe exactly as before
         read -r -a arr <<<"$combined"
@@ -1193,7 +1190,13 @@ write_entry_func() {
 if (( INTERACTIVE )); then
     if (( USE_GUM )); then
         # gum multi‑choice (but limit to 1)
-        post_status=$(gum choose --limit=1 p e d)
+        post_status=$(gum choose --limit=1 \
+        `"📤 p  - Post (publish)" \
+        "✏️  e  - Edit again" \
+        "🗂  d  - Draft (save for later)")
+
+        # Extract 'p', 'e', or 'd' from the selected line
+        post_status=$(echo "$post_status" | awk '{print $2}')
     else
         # dialog radiolist
         post_status=$(dialog --stdout --radiolist "Choose action:" 0 0 0 \

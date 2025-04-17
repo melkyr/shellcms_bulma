@@ -1191,7 +1191,7 @@ if (( INTERACTIVE )); then
     if (( USE_GUM )); then
         # gum multi‑choice (but limit to 1)
         post_status=$(gum choose --limit=1 \
-        `"📤 p  - Post (publish)" \
+        "📤 p  - Post (publish)" \
         "✏️  e  - Edit again" \
         "🗂  d  - Draft (save for later)")
 

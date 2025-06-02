@@ -2,10 +2,20 @@
 
 param(
     [string]$Path = "www/news",
-    [string]$Command
+    [string]$Command,
+    # Parameter for Invoke-Post, path to the .htmraw file to process or create
+    [string]$PostHtmRawPathParameter, 
+    [string]$PostFilePath, # Alias/legacy name for PostHtmRawPathParameter for Invoke-Post
+    # Parameter for Invoke-Edit, path to the .htmraw file to edit
+    [Parameter(Mandatory = $false, HelpMessage = "Path to the .htmraw file to edit.")]
+    [Alias("EditFilePath")]
+    [string]$EditHtmRawPathParameter
 )
 
 # Global variables
+# Set your preferred editor here, e.g., "code.exe", "C:\Program Files\Notepad++\notepad++.exe", "subl.exe"
+# If $null, the script will search for common editors.
+$Global:PreferredEditor = $null 
 $NumberOfIndexArticles = 10
 $SiteTitle = "My PowerShell Blog"
 $SiteAuthor = "PowerShell User"
@@ -108,6 +118,93 @@ function Invoke-Rebuild {
     Update-TagsIndex 
     Write-Host "--- Indexing Complete ---"
     Write-Host "Rebuild process finished."
+}
+
+# Function to open a specified file in an editor
+function Invoke-Edit {
+    param(
+        [Parameter(Mandatory=$true)]
+        [string]$EditFilePathParameter
+    )
+    Write-Verbose "Invoke-Edit started for parameter: $EditFilePathParameter"
+
+    # 1. Path Resolution
+    $ResolvedEditPath = $EditFilePathParameter
+    if (-not ([System.IO.Path]::IsPathRooted($ResolvedEditPath))) {
+        Write-Verbose "Provided path '$ResolvedEditPath' is relative. Resolving against ContentRoot: $ContentRoot"
+        $ResolvedEditPath = Join-Path -Path $ContentRoot -ChildPath $ResolvedEditPath
+    }
+    
+    # Attempt to get full path and verify existence as a file
+    try {
+        # Resolve-Path will error if the path doesn't exist, which is desired here.
+        $ResolvedEditPath = (Resolve-Path $ResolvedEditPath -ErrorAction Stop).Path 
+        Write-Verbose "Path resolved to: $ResolvedEditPath"
+        if (-not (Test-Path $ResolvedEditPath -PathType Leaf)) { # Should be redundant if Resolve-Path worked for a file
+            Write-Error "File not found or is not a file: $ResolvedEditPath" # Should be caught by Resolve-Path generally
+            return
+        }
+    } catch {
+        Write-Error "Error resolving or accessing file path '$EditFilePathParameter': $($_.Exception.Message)"
+        return
+    }
+    
+    Write-Host "Attempting to edit file: $ResolvedEditPath"
+
+    # 2. Editor Launch
+    $editorCommand = Get-EditorCommand
+    if (-not [string]::IsNullOrEmpty($editorCommand)) {
+        Write-Verbose "Attempting to open '$ResolvedEditPath' with editor: $editorCommand"
+        try {
+            Start-Process -FilePath $editorCommand -ArgumentList $ResolvedEditPath -ErrorAction Stop
+            $editorExeName = ($editorCommand -split '[\\/]')[-1] 
+            Write-Host "Launched editor '$editorExeName' for '$ResolvedEditPath'."
+        }
+        catch {
+            Write-Warning "Failed to launch editor '$editorCommand' for '$ResolvedEditPath'. Error: $($_.Exception.Message)"
+        }
+    }
+    else {
+        # Get-EditorCommand already issues a Write-Warning if no editor is found.
+        Write-Host "No suitable editor found or configured to open '$ResolvedEditPath'. Please open it manually."
+    }
+}
+
+# Function to determine the editor command to use
+function Get-EditorCommand {
+    Write-Verbose "Attempting to determine editor command..."
+
+    # 1. Check Preferred Editor
+    if (-not ([string]::IsNullOrWhiteSpace($Global:PreferredEditor))) {
+        Write-Verbose "Checking for preferred editor: '$Global:PreferredEditor'"
+        $foundCommand = Get-Command -Name $Global:PreferredEditor -ErrorAction SilentlyContinue
+        if ($null -ne $foundCommand) {
+            Write-Verbose "Using preferred editor: $($foundCommand.Source)"
+            return $foundCommand.Source
+        } else {
+            Write-Verbose "Preferred editor '$Global:PreferredEditor' not found in PATH."
+        }
+    } else {
+        Write-Verbose "No preferred editor set in `$Global:PreferredEditor."
+    }
+
+    # 2. Check Common Editors
+    Write-Verbose "Checking common editors."
+    $commonEditors = @("code.exe", "code-insiders.exe", "notepad++.exe", "subl.exe", "atom.exe", "geany.exe", "notepad.exe") 
+    # Added code-insiders based on common usage.
+    
+    foreach ($editorName in $commonEditors) {
+        Write-Verbose "Checking for editor: $editorName"
+        $foundCommand = Get-Command -Name $editorName -ErrorAction SilentlyContinue
+        if ($null -ne $foundCommand) {
+            Write-Verbose "Found common editor: $($foundCommand.Source)"
+            return $foundCommand.Source
+        }
+    }
+
+    # 3. Fallback/Not Found
+    Write-Warning "No suitable editor found after checking preferred and common list. Please set `$Global:PreferredEditor or install a common editor."
+    return $null
 }
 
 # Function to update the main index.html page
@@ -306,6 +403,28 @@ function Invoke-Post {
             }
             Set-Content -Path $ResolvedPostHtmRawPath -Value $SkeletonContent -Force -ErrorAction Stop
             Write-Host "New post created from skeleton: $ResolvedPostHtmRawPath"
+
+            # Launch editor for the new post
+            $editorCommand = Get-EditorCommand
+            if (-not [string]::IsNullOrEmpty($editorCommand)) {
+                Write-Verbose "Attempting to open '$ResolvedPostHtmRawPath' with editor: $editorCommand"
+                try {
+                    # For GUI editors, often they detach, so no need for -PassThru or complex handling
+                    Start-Process -FilePath $editorCommand -ArgumentList $ResolvedPostHtmRawPath -ErrorAction Stop
+                    # Get just the executable name for the message
+                    $editorExeName = ($editorCommand -split '[\\/]')[-1] 
+                    Write-Host "Launched editor '$editorExeName' for '$ResolvedPostHtmRawPath'."
+                }
+                catch {
+                    Write-Warning "Failed to launch editor '$editorCommand' for '$ResolvedPostHtmRawPath'. Error: $($_.Exception.Message)"
+                }
+            }
+            else {
+                # Get-EditorCommand already issues a Write-Warning if no editor is found.
+                # This message gives context-specific advice for the Invoke-Post command.
+                Write-Host "No suitable editor found or configured to open '$ResolvedPostHtmRawPath'. Please open it manually to edit."
+            }
+
         } catch {
             Write-Error "Failed to create new post from skeleton at $ResolvedPostHtmRawPath: $($_.Exception.Message)"
             return # Critical failure for this operation
@@ -765,6 +884,16 @@ switch ($Command) {
         }
         else {
             Write-Error "For -Command 'post', please specify -PostHtmRawPathParameter or -PostFilePath."
+        }
+    }
+    "edit" {
+        if ($PSBoundParameters.ContainsKey('EditHtmRawPathParameter')) { # Check preferred name first
+            Invoke-Edit -EditFilePathParameter $EditHtmRawPathParameter
+        } elseif ($PSBoundParameters.ContainsKey('EditFilePath')) { # Check alias
+            Invoke-Edit -EditFilePathParameter $EditFilePath
+        }
+        else {
+            Write-Error "The 'edit' command requires the -EditHtmRawPathParameter (or -EditFilePath) to be specified."
         }
     }
     default {

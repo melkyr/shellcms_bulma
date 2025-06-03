@@ -11,8 +11,17 @@ param(
     [Alias("EditFilePath")]
     [string]$EditHtmRawPathParameter,
     [Parameter(Mandatory = $false, HelpMessage = "Run the script in interactive TUI mode.")]
-    [switch]$Interactive
+    [switch]$Interactive,
+    [Parameter(Mandatory = $false, HelpMessage = "Displays this help message and exits.")]
+    [Alias("h", "?")]
+    [switch]$Help
 )
+
+# Handle -Help switch immediately after parameters are bound
+if ($PSBoundParameters.ContainsKey('Help')) {
+    Show-SpelunkerHelp
+    exit 0 # Exit successfully after displaying help
+}
 
 # Set interactive mode global flag
 $Global:IsInteractiveMode = if ($Interactive.IsPresent) { $true } else { $false }
@@ -56,6 +65,117 @@ function Set-GlobalPathVariables {
 }
 
 # --- Initial Setup of Global Variables ---
+
+function Show-SpelunkerHelp {
+    <#
+    .SYNOPSIS
+        Displays the help message for spelunker.ps1.
+    .DESCRIPTION
+        Shows detailed information about how to use the spelunker.ps1 script,
+        including parameters, commands, and examples.
+    #>
+    param() # No parameters for the help function itself
+
+    $helpText = @'
+NAME
+    spelunker.ps1 - A PowerShell script for generating a static blog/site,
+                    mimicking features from shellcms_b.
+
+SYNOPSIS
+    ./spelunker.ps1 -Command <command_name> [-Path <content_root_path>]
+                    [-PostHtmRawPathParameter <path_to_post.htmraw>]
+                    [-EditHtmRawPathParameter <path_to_edit.htmraw>]
+                    [-Interactive]
+                    [-Verbose]
+                    [-Help]
+
+DESCRIPTION
+    Spelunker is a static site generator written in PowerShell. It processes
+    .htmraw files (HTML content snippets), applies templates, and generates
+    a full static HTML website, including posts and index pages.
+
+PARAMETERS
+    -Command <string>
+        Specifies the action to perform.
+        Aliases: None
+
+    -Path <string>
+        The root directory of your content (e.g., "www/news" or "myblog").
+        Defaults to "www/news" relative to the script's location if not specified.
+        This path is used as the ContentRoot for finding templates, posts,
+        and generating output.
+        Aliases: ContentRootPath
+
+    -PostHtmRawPathParameter <string>
+        The path to the .htmraw file for the 'post' command.
+        If the file doesn't exist, it will be created from a skeleton.
+        Relative paths are resolved from the ContentRoot.
+        Aliases: PostFilePath
+
+    -EditHtmRawPathParameter <string>
+        The path to the .htmraw file for the 'edit' command.
+        Relative paths are resolved from the ContentRoot.
+        Aliases: EditFilePath
+
+    -Interactive [<switch>]
+        Runs the script in interactive mode, prompting for missing parameters
+        and choices via a Text User Interface (TUI).
+        Aliases: None
+
+    -Verbose [<switch>]
+        Provides detailed output of the script's operations.
+        Aliases: vb
+
+    -Help [<switch>]
+        Displays this help message and exits.
+        Aliases: h, ?
+
+AVAILABLE COMMANDS
+    post
+        Creates a new post from skeleton if the .htmraw file specified by
+        -PostHtmRawPathParameter doesn't exist, or processes an existing one.
+        Generates the corresponding .html file and updates all index pages.
+        In -Interactive mode, prompts for tags and post-save actions for new posts.
+
+    edit
+        Opens an existing .htmraw file (specified by -EditHtmRawPathParameter)
+        in a detected text editor. Does not generate HTML or update indexes.
+        In -Interactive mode, if no path is specified, it lists files for selection.
+
+    rebuild
+        Regenerates all .html post files from their .htmraw sources within the
+        ContentRoot. Updates all index pages (main, all_posts, all_tags, and
+        individual tag pages).
+
+    list (Placeholder - To be implemented)
+        Lists all published posts. (Currently not implemented in TUI/direct command)
+
+    tags (Placeholder - To be implemented)
+        Lists all unique tags. (Currently not implemented in TUI/direct command, though tag pages are generated)
+
+EXAMPLES
+    ./spelunker.ps1 -Command rebuild -Path "my_site_content"
+        Rebuilds the site located in "my_site_content".
+
+    ./spelunker.ps1 -Command post -PostHtmRawPathParameter "posts/my-new-article.htmraw" -Verbose
+        Creates or processes "posts/my-new-article.htmraw" and shows detailed output.
+
+    ./spelunker.ps1 -Interactive
+        Starts the script in interactive mode, prompting for path and command.
+
+    ./spelunker.ps1 -h
+        Displays this help message.
+
+NOTES
+    - Paths for -PostHtmRawPathParameter and -EditHtmRawPathParameter are generally
+      resolved relative to the -Path (ContentRoot) if not absolute.
+    - Editor for 'edit' command and new 'post' files is detected automatically
+      or can be set via the $Global:PreferredEditor variable in the script.
+'@ # End of here-string
+
+    Write-Host $helpText
+}
+
 # Set your preferred editor here, e.g., "code.exe", "C:\Program Files\Notepad++\notepad++.exe", "subl.exe"
 # If $null, the script will search for common editors.
 $Global:PreferredEditor = $null 

@@ -9,36 +9,130 @@ param(
     # Parameter for Invoke-Edit, path to the .htmraw file to edit
     [Parameter(Mandatory = $false, HelpMessage = "Path to the .htmraw file to edit.")]
     [Alias("EditFilePath")]
-    [string]$EditHtmRawPathParameter
+    [string]$EditHtmRawPathParameter,
+    [Parameter(Mandatory = $false, HelpMessage = "Run the script in interactive TUI mode.")]
+    [switch]$Interactive
 )
 
-# Global variables
+# Set interactive mode global flag
+$Global:IsInteractiveMode = if ($Interactive.IsPresent) { $true } else { $false }
+Write-Verbose "Interactive mode set to: $Global:IsInteractiveMode"
+
+# --- Function to Initialize/Re-initialize Global Path Variables ---
+function Set-GlobalPathVariables {
+    param (
+        [Parameter(Mandatory=$true)]
+        [string]$BaseContentPathFromParam # This is the value from -Path or user input
+    )
+
+    # Resolve ContentRoot: if $BaseContentPathFromParam is absolute, use it directly. Otherwise, join with script's parent directory.
+    if ([System.IO.Path]::IsPathRooted($BaseContentPathFromParam)) {
+        $Global:ContentRoot = $BaseContentPathFromParam
+    } else {
+        $Global:ContentRoot = Join-Path -Path $PSScriptRoot -ChildPath $BaseContentPathFromParam
+    }
+    # Attempt to resolve to a full, canonical path.
+    $Global:ContentRoot = (Resolve-Path -Path $Global:ContentRoot -ErrorAction SilentlyContinue).Path
+    if (-not $Global:ContentRoot) {
+        Write-Warning "The specified content path '$BaseContentPathFromParam' could not be resolved. Some operations may fail."
+        # Fallback to a non-resolved path or handle error more gracefully if needed
+        if ([System.IO.Path]::IsPathRooted($BaseContentPathFromParam)) { $Global:ContentRoot = $BaseContentPathFromParam } 
+        else { $Global:ContentRoot = Join-Path -Path $PSScriptRoot -ChildPath $BaseContentPathFromParam }
+    }
+
+    # Define other paths based on the (potentially overridden) ContentRoot
+    $Global:TemplatesDir = Join-Path -Path $Global:ContentRoot -ChildPath "cms_config"
+    $Global:HeaderTemplate = Join-Path -Path $Global:TemplatesDir -ChildPath "cms_header.txt"
+    $Global:FooterTemplate = Join-Path -Path $Global:TemplatesDir -ChildPath "cms_footer.txt"
+    $Global:BeginTemplate = Join-Path -Path $Global:TemplatesDir -ChildPath "cms_begin.txt"
+    $Global:EndTemplate = Join-Path -Path $Global:TemplatesDir -ChildPath "cms_end.txt"
+    $Global:SkeletonTemplate = Join-Path -Path $Global:TemplatesDir -ChildPath "cms_skeleton.txt"
+    $Global:IndexFile = Join-Path -Path $Global:ContentRoot -ChildPath "index.html"
+    $Global:AllPostsFile = Join-Path -Path $Global:ContentRoot -ChildPath "all_posts.html"
+    $Global:AllTagsFile = Join-Path -Path $Global:ContentRoot -ChildPath "all_tags.html"
+
+    Write-Verbose "Global paths re-initialized. ContentRoot: $($Global:ContentRoot)"
+    Write-Verbose "TemplatesDir: $($Global:TemplatesDir), IndexFile: $($Global:IndexFile)"
+}
+
+# --- Initial Setup of Global Variables ---
 # Set your preferred editor here, e.g., "code.exe", "C:\Program Files\Notepad++\notepad++.exe", "subl.exe"
 # If $null, the script will search for common editors.
 $Global:PreferredEditor = $null 
-$NumberOfIndexArticles = 10
-$SiteTitle = "My PowerShell Blog"
-$SiteAuthor = "PowerShell User"
+$Global:NumberOfIndexArticles = 10 # Default, can be overridden by config file later
+$Global:SiteTitle = "My PowerShell Blog" # Default, can be overridden
+$Global:SiteAuthor = "PowerShell User" # Default, can be overridden
 
-# Resolve ContentRoot: if -Path is absolute, use it directly. Otherwise, join with script's parent directory.
-$EffectivePath = if ([System.IO.Path]::IsPathRooted($Path)) {
-    $Path
-} else {
-    Join-Path -Path $PSScriptRoot -ChildPath $Path # $PSScriptRoot is the directory of the script
+# Initialize global paths based on the -Path parameter (or its default)
+Set-GlobalPathVariables -BaseContentPathFromParam $Path 
+
+
+# --- Interactive Mode Logic (TUI for initial command/path) ---
+if ($Global:IsInteractiveMode) {
+    Write-Verbose "Interactive mode detected."
+
+    # 1. Prompt for Content Path if not provided via -Path
+    if (-not $PSBoundParameters.ContainsKey('Path')) {
+        Write-Host "Current Content Root: $ContentRoot"
+        $inputPath = Read-Host -Prompt "Enter new path for content root, or press Enter to keep current"
+        if (-not [string]::IsNullOrWhiteSpace($inputPath)) {
+            if (Test-Path -Path $inputPath -IsValid) { # Basic validation, more robust check in Set-GlobalPathVariables
+                Write-Verbose "User entered new path: $inputPath. Re-initializing global paths."
+                $Path = $inputPath # Update $Path from param block to reflect user's choice for consistency
+                Set-GlobalPathVariables -BaseContentPathFromParam $Path # Re-initialize all paths
+            } else {
+                Write-Warning "The path '$inputPath' seems invalid or inaccessible. Keeping current ContentRoot: $ContentRoot"
+            }
+        }
+    }
+
+    # 2. Prompt for Command if not provided via -Command
+    if ([string]::IsNullOrWhiteSpace($Command)) {
+        $availableCommands = @(
+            [pscustomobject]@{ Name = "post";    Description = "Create a new post or process an existing .htmraw file." }
+            [pscustomobject]@{ Name = "edit";    Description = "Open an existing .htmraw file in an editor." }
+            [pscustomobject]@{ Name = "rebuild"; Description = "Rebuild all HTML files from .htmraw sources and update all indexes." }
+            # Placeholders for future commands:
+            # [pscustomobject]@{ Name = "list";    Description = "List all published posts." } 
+            # [pscustomobject]@{ Name = "tags";    Description = "List all tags." }
+            [pscustomobject]@{ Name = "exit";    Description = "Exit Spelunker." }
+        )
+        
+        Write-Host "`nPlease select a command to execute:" -ForegroundColor Yellow
+        # Attempt Out-GridView first, fallback to Read-Host if it fails (e.g. non-interactive console)
+        try {
+            $selectedCommandEntry = $availableCommands | Out-GridView -Title "Select Spelunker Command" -PassThru -ErrorAction Stop
+            if ($selectedCommandEntry) {
+                $Command = $selectedCommandEntry.Name
+                Write-Verbose "User selected command via Out-GridView: $Command"
+            } else {
+                Write-Warning "No command selected via Out-GridView."
+                # Allow fallback to Read-Host or exit
+            }
+        } catch {
+            Write-Verbose "Out-GridView failed or not available, falling back to Read-Host selection. Error: $($_.Exception.Message)"
+            for ($i = 0; $i -lt $availableCommands.Count; $i++) {
+                Write-Host ("{0,2}. {1,-10} - {2}" -f ($i + 1), $availableCommands[$i].Name, $availableCommands[$i].Description)
+            }
+            $choice = Read-Host -Prompt "Enter command number"
+            if ($choice -match '^\d+$' -and [int]$choice -ge 1 -and [int]$choice -le $availableCommands.Count) {
+                $Command = $availableCommands[[int]$choice - 1].Name
+                Write-Verbose "User selected command via Read-Host: $Command"
+            } else {
+                Write-Warning "Invalid selection '$choice'."
+                # $Command remains empty or previously set
+            }
+        }
+
+        if ([string]::IsNullOrWhiteSpace($Command) -or $Command -eq "exit") {
+            Write-Host "No command selected or 'exit' chosen. Exiting Spelunker."
+            exit
+        }
+    }
 }
-$ContentRoot = $EffectivePath 
 
-# Define other paths based on the (potentially overridden) ContentRoot
-$TemplatesDir = Join-Path -Path $ContentRoot -ChildPath "cms_config"
-$HeaderTemplate = Join-Path -Path $TemplatesDir -ChildPath "cms_header.txt"
-$FooterTemplate = Join-Path -Path $TemplatesDir -ChildPath "cms_footer.txt"
-$BeginTemplate = Join-Path -Path $TemplatesDir -ChildPath "cms_begin.txt"
-$EndTemplate = Join-Path -Path $TemplatesDir -ChildPath "cms_end.txt"
-$SkeletonTemplate = Join-Path -Path $TemplatesDir -ChildPath "cms_skeleton.txt"
-$IndexFile = Join-Path -Path $ContentRoot -ChildPath "index.html"
-$AllPostsFile = Join-Path -Path $ContentRoot -ChildPath "all_posts.html"
-$AllTagsFile = Join-Path -Path $ContentRoot -ChildPath "all_tags.html"
-
+# --- Main Command Switch ---
+Write-Verbose "Executing command: $Command"
 # Placeholder functions
 function Invoke-Rebuild {
     Write-Host "Starting Invoke-Rebuild. ContentRoot: $ContentRoot (Full: $((Resolve-Path $ContentRoot).Path))"
@@ -123,35 +217,73 @@ function Invoke-Rebuild {
 # Function to open a specified file in an editor
 function Invoke-Edit {
     param(
-        [Parameter(Mandatory=$true)]
-        [string]$EditFilePathParameter
+        # Parameter is no longer mandatory here; logic below will handle interactive selection if not provided.
+        [string]$EditFilePathParameter 
     )
-    Write-Verbose "Invoke-Edit started for parameter: $EditFilePathParameter"
-
-    # 1. Path Resolution
-    $ResolvedEditPath = $EditFilePathParameter
-    if (-not ([System.IO.Path]::IsPathRooted($ResolvedEditPath))) {
-        Write-Verbose "Provided path '$ResolvedEditPath' is relative. Resolving against ContentRoot: $ContentRoot"
-        $ResolvedEditPath = Join-Path -Path $ContentRoot -ChildPath $ResolvedEditPath
-    }
     
-    # Attempt to get full path and verify existence as a file
-    try {
-        # Resolve-Path will error if the path doesn't exist, which is desired here.
-        $ResolvedEditPath = (Resolve-Path $ResolvedEditPath -ErrorAction Stop).Path 
-        Write-Verbose "Path resolved to: $ResolvedEditPath"
-        if (-not (Test-Path $ResolvedEditPath -PathType Leaf)) { # Should be redundant if Resolve-Path worked for a file
-            Write-Error "File not found or is not a file: $ResolvedEditPath" # Should be caught by Resolve-Path generally
+    $ResolvedEditPath = $null
+
+    if (-not ([string]::IsNullOrWhiteSpace($EditFilePathParameter))) {
+        Write-Verbose "Invoke-Edit started with provided parameter: $EditFilePathParameter"
+        $ResolvedEditPath = $EditFilePathParameter
+        if (-not ([System.IO.Path]::IsPathRooted($ResolvedEditPath))) {
+            Write-Verbose "Provided path '$ResolvedEditPath' is relative. Resolving against ContentRoot: $Global:ContentRoot"
+            $ResolvedEditPath = Join-Path -Path $Global:ContentRoot -ChildPath $ResolvedEditPath
+        }
+        try {
+            $ResolvedEditPath = (Resolve-Path -LiteralPath $ResolvedEditPath -ErrorAction Stop).Path 
+            Write-Verbose "Path resolved to: $ResolvedEditPath"
+            if (-not (Test-Path -LiteralPath $ResolvedEditPath -PathType Leaf)) {
+                Write-Error "File not found or is not a file at the provided path: $ResolvedEditPath"
+                return
+            }
+        } catch {
+            Write-Error "Error resolving or accessing provided file path '$EditFilePathParameter': $($_.Exception.Message)"
             return
         }
-    } catch {
-        Write-Error "Error resolving or accessing file path '$EditFilePathParameter': $($_.Exception.Message)"
+    } elseif ($Global:IsInteractiveMode) {
+        Write-Verbose "Invoke-Edit started in interactive mode without a pre-defined file path."
+        Write-Host "Please select an .htmraw file to edit:" -ForegroundColor Yellow
+        
+        $availableFiles = Get-ChildItem -Path $Global:ContentRoot -Filter *.htmraw -Recurse -File -ErrorAction SilentlyContinue | 
+            Select-Object FullName, @{Name="RelativePath"; Expression={$_.FullName.Substring($Global:ContentRoot.Length).TrimStart('\/')}}, Name, LastWriteTime, DirectoryName |
+            Sort-Object RelativePath
+
+        if ($null -eq $availableFiles -or $availableFiles.Count -eq 0) {
+            Write-Warning "No .htmraw files found in '$($Global:ContentRoot)' or its subdirectories."
+            return
+        }
+        
+        $selectedFile = $null
+        try {
+            $selectedFile = $availableFiles | Out-GridView -Title "Select .htmraw File to Edit" -PassThru -ErrorAction Stop
+        } catch {
+            Write-Warning "Out-GridView is not available or failed. Error: $($_.Exception.Message)"
+            # Fallback to a simpler list if Out-GridView fails (though less ideal for many files)
+            Write-Host "Available files to edit:"
+            for($i=0; $i -lt $availableFiles.Count; $i++) {
+                Write-Host ("{0,3}: {1}" -f ($i+1), $availableFiles[$i].RelativePath)
+            }
+            $choice = Read-Host -Prompt "Enter number of file to edit"
+            if ($choice -match '^\d+$' -and [int]$choice -ge 1 -and [int]$choice -le $availableFiles.Count) {
+                $selectedFile = $availableFiles[[int]$choice - 1]
+            }
+        }
+
+        if ($null -eq $selectedFile) {
+            Write-Warning "No file selected for editing."
+            return
+        }
+        $ResolvedEditPath = $selectedFile.FullName # Use FullName as it's already an absolute path
+        Write-Verbose "User selected file: $ResolvedEditPath"
+    } else {
+        Write-Error "The 'edit' command requires a file path to be specified via -EditHtmRawPathParameter (or -EditFilePath) when not in interactive mode."
         return
     }
     
     Write-Host "Attempting to edit file: $ResolvedEditPath"
 
-    # 2. Editor Launch
+    # Editor Launch (common logic for both parameter-provided and interactively selected path)
     $editorCommand = Get-EditorCommand
     if (-not [string]::IsNullOrEmpty($editorCommand)) {
         Write-Verbose "Attempting to open '$ResolvedEditPath' with editor: $editorCommand"
@@ -382,6 +514,7 @@ function Invoke-Post {
     Write-Host "Effective post source file target: $ResolvedPostHtmRawPath"
 
     # 2. File Existence Check and Skeleton Copy
+    $newFileCreated = $false # Flag to track if we created the file in this run
     if (-not (Test-Path $ResolvedPostHtmRawPath -PathType Leaf)) {
         Write-Host "Source file '$ResolvedPostHtmRawPath' does not exist. Attempting to create new post from skeleton..."
         $TargetDirectory = Split-Path -Path $ResolvedPostHtmRawPath
@@ -403,6 +536,92 @@ function Invoke-Post {
             }
             Set-Content -Path $ResolvedPostHtmRawPath -Value $SkeletonContent -Force -ErrorAction Stop
             Write-Host "New post created from skeleton: $ResolvedPostHtmRawPath"
+            $newFileCreated = $true
+
+            # Interactive Tag Input for new posts
+            if ($Global:IsInteractiveMode) { # This if block is for tags
+                Write-Verbose "Interactive mode: Prompting for tags for new post $ResolvedPostHtmRawPath"
+                
+                # Gather existing tags to suggest
+                $allTagsFromAllPosts = [System.Collections.Generic.List[string]]::new()
+                $tempAllHtmRawFiles = Get-ChildItem -Path $Global:ContentRoot -Filter *.htmraw -Recurse -ErrorAction SilentlyContinue
+                foreach ($tempFileInScan in $tempAllHtmRawFiles) {
+                    if ($tempFileInScan.FullName -ne $ResolvedPostHtmRawPath -and -not $tempFileInScan.FullName.StartsWith((Resolve-Path $Global:TemplatesDir -ErrorAction SilentlyContinue).Path)) {
+                        $tempParsed = Parse-HtmRawContent -RawContent (Get-HtmRawSourceFile -FilePath $tempFileInScan.FullName)
+                        if ($null -ne $tempParsed -and $null -ne $tempParsed.Tags) {
+                            $tempParsed.Tags | ForEach-Object { $allTagsFromAllPosts.Add($_) }
+                        }
+                    }
+                }
+                $existingUniqueTags = $allTagsFromAllPosts | Sort-Object -Unique
+                
+                $selectedExistingTags = @()
+                if ($existingUniqueTags.Count -gt 0) {
+                    Write-Host "`nSelect existing tags (optional). Press OK for selections, Cancel to skip." -ForegroundColor Yellow
+                    # Out-GridView can be finicky in some terminals / ISE, but is best effort.
+                    try {
+                        $selectedExistingTags = $existingUniqueTags | Out-GridView -Title "Select Existing Tags for '$($ResolvedPostHtmRawPath | Split-Path -Leaf)'" -PassThru -ErrorAction Stop
+                        if ($null -eq $selectedExistingTags) { $selectedExistingTags = @() } 
+                        Write-Verbose "User selected existing tags via Out-GridView: $($selectedExistingTags -join ', ')"
+                    } catch {
+                         Write-Warning "Out-GridView for existing tag selection failed or was skipped. You can enter all tags manually. Error: $($_.Exception.Message)"
+                         # Display manually if Out-GridView fails
+                         Write-Host "Available existing tags:"
+                         $existingUniqueTags | ForEach-Object { Write-Host "- $_" }
+                         $tagsToSelectFromList = Read-Host -Prompt "Enter existing tags to use from the list above, separated by commas (or press Enter to skip)"
+                         if (-not [string]::IsNullOrWhiteSpace($tagsToSelectFromList)) {
+                             $selectedExistingTags = $tagsToSelectFromList.Split(',') | ForEach-Object { $_.Trim() } | Where-Object { $existingUniqueTags -contains $_ }
+                         }
+                    }
+                } else {
+                    Write-Verbose "No existing tags found to suggest."
+                }
+
+                $newTagsString = Read-Host -Prompt "Enter any NEW tags, separated by commas (optional)"
+                $newTags = @()
+                if (-not [string]::IsNullOrWhiteSpace($newTagsString)) {
+                    $newTags = $newTagsString.Split(',') | ForEach-Object { $_.Trim() } | Where-Object { -not [string]::IsNullOrWhiteSpace($_) }
+                }
+                Write-Verbose "User entered new tags: $($newTags -join ', ')"
+
+                $finalTags = ($selectedExistingTags + $newTags) | Sort-Object -Unique | Where-Object { -not [string]::IsNullOrWhiteSpace($_) }
+
+                if ($finalTags.Count -gt 0) {
+                    Write-Verbose "Final combined tags: $($finalTags -join ', ')"
+                    try {
+                        $fileContent = Get-Content -Raw -Path $ResolvedPostHtmRawPath -ErrorAction Stop
+                        # Regex to find <!--RawTags: followed by anything except -->, then -->
+                        # This handles cases where tags might be empty or have various characters.
+                        $updatedContent = $fileContent -replace '<!--RawTags:.*?-->', "<!--RawTags:$($finalTags -join ',')-->"
+                        Set-Content -Path $ResolvedPostHtmRawPath -Value $updatedContent -Force -ErrorAction Stop
+                        Write-Host "Updated tags in '$ResolvedPostHtmRawPath' to: $($finalTags -join ', ')" -ForegroundColor Green
+                    } catch {
+                        Write-Error "Failed to update tags in '$ResolvedPostHtmRawPath': $($_.Exception.Message)"
+                    }
+                } else {
+                    # If skeleton had default tags and user removed them all, this path might be taken.
+                    # Or if user provided no tags and selected none.
+                    # We might want to ensure the RawTags line is still present but empty, e.g. <!--RawTags:-->
+                    Write-Verbose "No final tags specified. Default tags from skeleton (if any) will be used or tags will be empty."
+                    # Optionally, ensure the line is at least <!--RawTags:-->
+                    try {
+                        $fileContent = Get-Content -Raw -Path $ResolvedPostHtmRawPath -ErrorAction Stop
+                        if ($fileContent -notmatch '<!--RawTags:.*?-->') {
+                             # If the line is somehow missing, add it. This is defensive.
+                             # For simplicity now, assuming skeleton always provides it.
+                        } else {
+                             # If user wants no tags, ensure the line is empty of tags
+                             $updatedContent = $fileContent -replace '<!--RawTags:.*?-->', "<!--RawTags:-->"
+                             if ($updatedContent -ne $fileContent) {
+                                Set-Content -Path $ResolvedPostHtmRawPath -Value $updatedContent -Force -ErrorAction Stop
+                                Write-Host "Cleared default tags in '$ResolvedPostHtmRawPath' as per user input." -ForegroundColor Green
+                             }
+                        }
+                    } catch {
+                         Write-Error "Failed to clear/verify tags in '$ResolvedPostHtmRawPath': $($_.Exception.Message)"
+                    }
+                }
+            } # End if ($Global:IsInteractiveMode)
 
             # Launch editor for the new post
             $editorCommand = Get-EditorCommand
@@ -424,28 +643,68 @@ function Invoke-Post {
                 # This message gives context-specific advice for the Invoke-Post command.
                 Write-Host "No suitable editor found or configured to open '$ResolvedPostHtmRawPath'. Please open it manually to edit."
             }
+            
+            # --- TUI Prompt for P/E/S for newly created files in interactive mode ---
+            if ($Global:IsInteractiveMode -and $newFileCreated) {
+                $userAction = ""
+                do {
+                    Write-Host "`nPost '$($ResolvedPostHtmRawPath | Split-Path -Leaf)' has been prepared/updated." -ForegroundColor Yellow
+                    $choices = @(
+                        [pscustomobject]@{ Name = "Publish"; Letter = "P"; Description = "Generate HTML and update indexes now." }
+                        [pscustomobject]@{ Name = "Edit";    Letter = "E"; Description = "Re-open in editor / continue editing." }
+                        [pscustomobject]@{ Name = "Save as Draft";   Letter = "S"; Description = "Skip HTML generation and index updates for now." }
+                    )
+                    $choices | ForEach-Object { Write-Host ("  [{0}] {1,-15} - {2}" -f $_.Letter, $_.Name, $_.Description) }
+                    $actionChoice = Read-Host -Prompt "Enter action (P/E/S)"
+                    
+                    $userAction = $actionChoice.ToUpper()
 
-        } catch {
+                    switch ($userAction) {
+                        "P" { Write-Verbose "User chose to Publish." }
+                        "E" {
+                            Write-Verbose "User chose to Edit again."
+                            $editorToReopen = Get-EditorCommand
+                            if (-not [string]::IsNullOrEmpty($editorToReopen)) {
+                                Write-Verbose "Attempting to re-open '$ResolvedPostHtmRawPath' with editor: $editorToReopen"
+                                try {
+                                    Start-Process -FilePath $editorToReopen -ArgumentList $ResolvedPostHtmRawPath -ErrorAction Stop
+                                } catch { Write-Warning "Failed to re-launch editor '$editorToReopen'. Error: $($_.Exception.Message)" }
+                            } else { Write-Warning "No editor found to re-open." }
+                        }
+                        "S" {
+                            Write-Verbose "User chose to Save as Draft."
+                            Write-Host "Post '$ResolvedPostHtmRawPath' saved as a draft. HTML generation and index updates will be skipped." -ForegroundColor Green
+                            return # Exit Invoke-Post entirely
+                        }
+                        default {
+                            Write-Warning "Invalid selection. Please choose P, E, or S."
+                            $userAction = "E" # Force loop to re-prompt by making it seem like Edit was chosen
+                        }
+                    }
+                } while ($userAction -eq "E") # Loop as long as user wants to edit or enters invalid choice that defaults to E
+            } # --- End TUI P/E/S Prompt ---
+
+        } catch { # This catch is for the block that creates the new file from skeleton
             Write-Error "Failed to create new post from skeleton at $ResolvedPostHtmRawPath: $($_.Exception.Message)"
             return # Critical failure for this operation
         }
-    } else {
+    } else { # This else is for if (-not (Test-Path $ResolvedPostHtmRawPath -PathType Leaf))
         Write-Host "Processing existing post: $ResolvedPostHtmRawPath"
+        # For existing posts, we don't show the P/E/S prompt, just proceed to generate.
+        # If we wanted P/E/S for existing posts, $newFileCreated would need different logic.
     }
 
-    # 3. Determine Output Path
+    # 3. Determine Output Path (This is fine, but $ResolvedPostHtmRawPath should be used with -LiteralPath)
     $OutputFileName = [System.IO.Path]::GetFileNameWithoutExtension($ResolvedPostHtmRawPath) + ".html"
     $OutputFilePath = Join-Path -Path (Split-Path -Path $ResolvedPostHtmRawPath) -ChildPath $OutputFileName
     Write-Verbose "Output HTML file will be: $OutputFilePath"
 
     # 4. Process the Post
-    $Timestamp = (Get-Item $ResolvedPostHtmRawPath).LastWriteTime # Works for existing or newly created file
+    $Timestamp = (Get-Item -LiteralPath $ResolvedPostHtmRawPath).LastWriteTime 
     Write-Verbose "Timestamp for post $ResolvedPostHtmRawPath is $Timestamp"
 
-    # New-BlogPostHtml handles its own success/error messages.
     New-BlogPostHtml -SourceFilePath $ResolvedPostHtmRawPath -OutputFilePath $OutputFilePath -Timestamp $Timestamp
     
-    # Check if HTML was actually generated before updating indexes
     if (-not (Test-Path $OutputFilePath -PathType Leaf)) {
         Write-Warning "HTML file $OutputFilePath was not generated as expected by New-BlogPostHtml. Skipping index updates for this post."
         return
@@ -887,16 +1146,21 @@ switch ($Command) {
         }
     }
     "edit" {
-        if ($PSBoundParameters.ContainsKey('EditHtmRawPathParameter')) { # Check preferred name first
-            Invoke-Edit -EditFilePathParameter $EditHtmRawPathParameter
-        } elseif ($PSBoundParameters.ContainsKey('EditFilePath')) { # Check alias
-            Invoke-Edit -EditFilePathParameter $EditFilePath
+        $filePathToEdit = $null
+        if ($PSBoundParameters.ContainsKey('EditHtmRawPathParameter')) {
+            $filePathToEdit = $EditHtmRawPathParameter
+        } elseif ($PSBoundParameters.ContainsKey('EditFilePath')) { # Alias for EditHtmRawPathParameter
+            $filePathToEdit = $EditFilePath 
         }
-        else {
-            Write-Error "The 'edit' command requires the -EditHtmRawPathParameter (or -EditFilePath) to be specified."
-        }
+        # Invoke-Edit will handle interactive prompting if $filePathToEdit is $null and mode is interactive.
+        # It will also handle erroring out if $filePathToEdit is $null and not interactive.
+        Invoke-Edit -EditFilePathParameter $filePathToEdit
     }
     default {
-        Write-Host "Unknown command: $Command"
+        if ([string]::IsNullOrWhiteSpace($Command)) {
+            Write-Error "No command specified. Use -Command <command_name> (e.g., post, edit, rebuild) or run with the -Interactive switch for a menu."
+        } else {
+            Write-Error "Unknown command: '$Command'. Valid commands are post, edit, rebuild. Or use -Interactive for a menu."
+        }
     }
 }

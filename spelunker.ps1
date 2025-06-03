@@ -133,35 +133,73 @@ function Determine-PageDepth {
 function Adjust-AssetPaths {
     [CmdletBinding()]
     param(
-        [Parameter(Mandatory=$true)]
         [string]$HtmlContentString,
-
-        [Parameter(Mandatory=$true)]
         [int]$PageDepth
     )
 
+    Write-Verbose "Adjusting asset paths for page depth: $PageDepth"
+    $adjustedHtml = $HtmlContentString
+
+    # --- Phase 1: Adjust paths that already start with ../ (Type A) ---
+    # Example: ../css0/bulma.css
+    # Regex captures:
+    #   $1 = HTML tag part up to the quote (e.g., <link rel="stylesheet" href=)
+    #   $2 = The quote character itself (' or ")
+    #   $3 = The asset folder (css0/ or images0/ or js0/)
+    #   $4 = The rest of the path after the asset folder (e.g., bulma.css)
+    # Important: $PagePath in Determine-PageDepth is the path to the HTML file itself.
+    # So, if index.html is at depth 0, and it links to ../css0/style.css, this path is WRONG.
+    # If posts/post1.html is at depth 1, and it links to ../css0/style.css, this path is CORRECT.
+    # If posts/sub/post2.html is at depth 2, and it links to ../css0/style.css, this path is WRONG.
+
+    $typeARegex = '(?i)(<(?:a|link|img|script|iframe|source)[^>]*?(?:href|src)\s*=\s*([`"']))\.\./(css0/|images0/|js0/)([^`"]*[`"'])'
+    # Regex for $typeARegex was updated to capture the closing quote in group 4 to avoid partial replacements.
+
     if ($PageDepth -eq 0) {
-        Write-Verbose "Page depth is 0, no asset path adjustment needed."
-        return $HtmlContentString
+        # Depth 0: ../css0/style.css" -> css0/style.css"
+        $replacementA_Depth0 = '${1}${2}${3}${4}' # Remove ../
+        $adjustedHtml = [regex]::Replace($adjustedHtml, $typeARegex, $replacementA_Depth0)
+        Write-Verbose "Adjusted Type A paths for depth 0 (removed leading '../')"
+    }
+    elseif ($PageDepth -eq 1) {
+        # Depth 1: ../css0/style.css -> remains ../css0/style.css (no change needed for these)
+        Write-Verbose "Type A paths (starting with ../) at depth 1 require no change relative to their current form."
+    }
+    elseif ($PageDepth -gt 1) {
+        # Depth > 1: ../css0/style.css -> ../../css0/style.css (add $PageDepth-1 more ../)
+        $prefixForTypeA = ("../" * ($PageDepth - 1))
+        $replacementA_DepthGt1 = '${1}${2}' + $prefixForTypeA + '../${3}${4}' # Prepend to existing ../
+        $adjustedHtml = [regex]::Replace($adjustedHtml, $typeARegex, $replacementA_DepthGt1)
+        Write-Verbose "Adjusted Type A paths for depth $PageDepth (added '$prefixForTypeA' to existing '../')"
     }
 
-    $prefix = ("../" * $PageDepth) # PowerShell string multiplication
-    Write-Verbose "Adjusting asset paths for depth $PageDepth using prefix '$prefix'."
+    # --- Phase 2: Adjust paths that start directly with asset folder names or specific root files (Type B) ---
+    # Examples: images0/icon.png, css0/foot.htm, feed.rss
+    # These are treated as root-relative from the site's perspective.
 
-    $adjustedHtml = $HtmlContentString
-    $assetFoldersToAdjust = @("images0", "css0") # Add other root asset folders here if needed
+    if ($PageDepth -gt 0) { # No adjustment needed for Type B at depth 0
+        $prefixForTypeB = ("../" * $PageDepth)
 
-    foreach ($folderName in $assetFoldersToAdjust) {
-        # Regex explanation:
-        # (?i) : Case-insensitive match
-        # (<(?:a|link|img|script|iframe|source)[^>]*?) : Group 1: Capture the opening tag part (e.g. <a ... or <img ...)
-        # (?:href|src)\s*=\s* : Non-capturing group for href= or src= with optional whitespace
-        # ([`"']) : Group 2: Capture the opening quote (single, double, or backtick)
-        # ($folderName)/ : Group 3: Capture the specific folder name followed by a slash (e.g. images0/)
-        $regexPattern = "(?i)(<(?:a|link|img|script|iframe|source)[^>]*?(?:href|src)\s*=\s*([`"']))($folderName)/"
-        $replacementPattern = '${1}' + $prefix + '${3}/' # Prepend prefix to the folder name
+        $typeBItems = @("images0", "css0", "js0", "feed.rss")
 
-        $adjustedHtml = [regex]::Replace($adjustedHtml, $regexPattern, $replacementPattern)
+        foreach ($itemName in $typeBItems) {
+            # Regex captures:
+            #   $1 = HTML tag part up to the quote
+            #   $2 = The quote character
+            #   $3 = The item name itself (e.g., images0 or feed.rss)
+            #   $4 = The rest of the path including leading slash if present, up to the closing quote.
+            #          (e.g., /icon.png" or " if it's just feed.rss")
+            # Pattern ensures it only matches if $itemName is at the start of the path value.
+            $regexPatternB = "(?i)(<(?:a|link|img|script|iframe|source)[^>]*?(?:href|src)\s*=\s*([`"']))($itemName)((?:/[^`"']*)?`"|[^`"']*\.(?:png|jpg|jpeg|gif|svg|css|js|rss)`")"
+            # Regex for $regexPatternB was updated to better capture typical file/folder structures and ensure it captures the closing quote.
+            # It now looks for $itemName possibly followed by a / and more chars, or directly by a file extension relevant to assets, then the closing quote.
+
+            $replacementPatternB = '${1}${2}' + $prefixForTypeB + '${3}${4}'
+            $adjustedHtml = [regex]::Replace($adjustedHtml, $regexPatternB, $replacementPatternB)
+        }
+        Write-Verbose "Adjusted Type B paths for depth $PageDepth (added '$prefixForTypeB')"
+    } else {
+        Write-Verbose "Type B paths (starting with asset folder names like 'images0/' or specific files like 'feed.rss') at depth 0 require no change."
     }
 
     return $adjustedHtml

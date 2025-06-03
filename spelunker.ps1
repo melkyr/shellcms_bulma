@@ -4,7 +4,7 @@ param(
     [string]$Path = "www/news",
     [string]$Command,
     # Parameter for Invoke-Post, path to the .htmraw file to process or create
-    [string]$PostHtmRawPathParameter, 
+    [string]$PostHtmRawPathParameter,
     [string]$PostFilePath, # Alias/legacy name for PostHtmRawPathParameter for Invoke-Post
     # Parameter for Invoke-Edit, path to the .htmraw file to edit
     [Parameter(Mandatory = $false, HelpMessage = "Path to the .htmraw file to edit.")]
@@ -45,7 +45,7 @@ function Set-GlobalPathVariables {
     if (-not $Global:ContentRoot) {
         Write-Warning "The specified content path '$BaseContentPathFromParam' could not be resolved. Some operations may fail."
         # Fallback to a non-resolved path or handle error more gracefully if needed
-        if ([System.IO.Path]::IsPathRooted($BaseContentPathFromParam)) { $Global:ContentRoot = $BaseContentPathFromParam } 
+        if ([System.IO.Path]::IsPathRooted($BaseContentPathFromParam)) { $Global:ContentRoot = $BaseContentPathFromParam }
         else { $Global:ContentRoot = Join-Path -Path $PSScriptRoot -ChildPath $BaseContentPathFromParam }
     }
 
@@ -65,6 +65,335 @@ function Set-GlobalPathVariables {
 }
 
 # --- Initial Setup of Global Variables ---
+
+# --- Path and Asset Helper Functions ---
+function Determine-PageDepth {
+    [CmdletBinding()]
+    param(
+        [Parameter(Mandatory=$true)]
+        [string]$PagePath,
+
+        [Parameter(Mandatory=$true)]
+        [string]$BaseSitePath
+    )
+
+    Write-Verbose "Determining page depth for '$PagePath' relative to '$BaseSitePath'..."
+
+    $resolvedPagePath = (Resolve-Path -LiteralPath $PagePath -ErrorAction SilentlyContinue).ProviderPath
+    $resolvedBasePath = (Resolve-Path -LiteralPath $BaseSitePath -ErrorAction SilentlyContinue).ProviderPath
+
+    if (-not $resolvedPagePath -or -not $resolvedBasePath) {
+        Write-Warning "Could not resolve one or both paths: Page='$PagePath', Base='$BaseSitePath'. Returning depth 0."
+        return 0
+    }
+
+    # Ensure base path ends with a separator for correct substring and comparison
+    $normalizedBasePath = $resolvedBasePath
+    if (-not ($normalizedBasePath.EndsWith("\") -or $normalizedBasePath.EndsWith("/"))) {
+        $normalizedBasePath += [System.IO.Path]::DirectorySeparatorChar
+    }
+
+    if (-not $resolvedPagePath.StartsWith($normalizedBasePath, [System.StringComparison]::InvariantCultureIgnoreCase)) {
+        Write-Warning "Page path '$resolvedPagePath' does not start with base path '$normalizedBasePath'. Cannot determine depth accurately. Returning depth 0."
+        return 0
+    }
+
+    $relativePathString = $resolvedPagePath.Substring($normalizedBasePath.Length)
+    $normalizedRelativePath = $relativePathString.TrimStart('\/')
+
+    Write-Verbose "Normalized relative path: '$normalizedRelativePath'"
+
+    if ([string]::IsNullOrWhiteSpace($normalizedRelativePath) -or $normalizedRelativePath -notlike "*[\/\\]*") {
+        # File is directly in the base path or is the base path itself (if PagePath was a dir)
+        # Or if it's a file in root and normalizedRelativePath is just "filename.html"
+        # We are interested in directory depth of the *file's location*.
+        # So, if normalizedRelativePath doesn't contain any separators, its *directory* is the root.
+        $parentDirRelativePath = Split-Path -Path $normalizedRelativePath
+        if ([string]::IsNullOrWhiteSpace($parentDirRelativePath)) {
+            Write-Verbose "Depth calculated as 0 (file in root or no directory segments)."
+            return 0
+        }
+        $normalizedRelativePath = $parentDirRelativePath # Now consider only the directory part for depth
+    }
+
+    # Split by both types of slashes just in case, though PowerShell paths are usually consistent
+    $segments = $normalizedRelativePath.Split(@('\', '/'), [System.StringSplitOptions]::RemoveEmptyEntries)
+    $depth = $segments.Count
+
+    # If the original PagePath was a directory (e.g. ContentRoot itself for index.html),
+    # segments.Count might be 0 if normalizedRelativePath was empty.
+    # However, for a file like "index.html" in root, normalizedRelativePath is "index.html",
+    # Split-Path gives "", segments.Count on "" is 0. This is correct (depth 0).
+    # For "sub/index.html", normalizedRelativePath is "sub/index.html", Split-Path gives "sub", segments.Count on "sub" is 1. Correct.
+
+    Write-Verbose "Determined page depth for '$PagePath' as $depth."
+    return $depth
+}
+
+function Adjust-AssetPaths {
+    [CmdletBinding()]
+    param(
+        [Parameter(Mandatory=$true)]
+        [string]$HtmlContentString,
+
+        [Parameter(Mandatory=$true)]
+        [int]$PageDepth
+    )
+
+    if ($PageDepth -eq 0) {
+        Write-Verbose "Page depth is 0, no asset path adjustment needed."
+        return $HtmlContentString
+    }
+
+    $prefix = ("../" * $PageDepth) # PowerShell string multiplication
+    Write-Verbose "Adjusting asset paths for depth $PageDepth using prefix '$prefix'."
+
+    $adjustedHtml = $HtmlContentString
+    $assetFoldersToAdjust = @("images0", "css0") # Add other root asset folders here if needed
+
+    foreach ($folderName in $assetFoldersToAdjust) {
+        # Regex explanation:
+        # (?i) : Case-insensitive match
+        # (<(?:a|link|img|script|iframe|source)[^>]*?) : Group 1: Capture the opening tag part (e.g. <a ... or <img ...)
+        # (?:href|src)\s*=\s* : Non-capturing group for href= or src= with optional whitespace
+        # ([`"']) : Group 2: Capture the opening quote (single, double, or backtick)
+        # ($folderName)/ : Group 3: Capture the specific folder name followed by a slash (e.g. images0/)
+        $regexPattern = "(?i)(<(?:a|link|img|script|iframe|source)[^>]*?(?:href|src)\s*=\s*([`"']))($folderName)/"
+        $replacementPattern = '${1}' + $prefix + '${3}/' # Prepend prefix to the folder name
+
+        $adjustedHtml = [regex]::Replace($adjustedHtml, $regexPattern, $replacementPattern)
+    }
+
+    return $adjustedHtml
+}
+
+
+# --- HTML Generation Helper Functions ---
+
+function Get-SearchBoxHtml {
+    [CmdletBinding()]
+    param()
+    Write-Verbose "Generating search box HTML..."
+    $formHtml = ""
+    if ([string]::IsNullOrWhiteSpace($Global:SearchBoxEngine) -or $Global:SearchBoxEngine -eq 'none') {
+        return "" # No search box if engine is none or not set
+    }
+
+    # Remove http(s):// from CmsUrl for sitesearch parameter if needed by engine
+    $baseCmsUrlForSearch = $Global:CmsUrl -replace 'https?://([^/]+).*', '$1' # Extracts domain for site search
+    # If CmsUrl is just a relative path like "news", this might need adjustment or use SiteUrl's domain.
+    # For simplicity, assuming CmsUrl is a full URL from which domain can be extracted.
+    # If $Global:CmsUrl itself is used as the value for sitesearch, it might work for Google too.
+    # Let's use the specific domain as per typical Google "sitesearch" usage.
+    # If SiteUrl is more appropriate for a site-wide search, that logic would go here.
+
+    switch ($Global:SearchBoxEngine.ToLowerInvariant()) {
+        "google" {
+            # For Google, sitesearch value should typically be the domain e.g. "example.com"
+            # or a specific path prefix e.g. "example.com/news"
+            $searchDomain = $Global:CmsUrl -replace 'https?://' # Remove protocol
+            if ($searchDomain.Contains("/")) {
+                 $searchDomain = $searchDomain.Substring(0, $searchDomain.IndexOf("/")) # Get only domain part if path exists
+            }
+            # If CmsUrl was just a relative path, this logic needs to be smarter or rely on SiteUrl
+            # For now, assuming CmsUrl is like http://domain.com/path
+            # A safer bet for sitesearch might be just the domain of SiteUrl.
+            $siteSearchValue = $Global:SiteUrl -replace 'https?://([^/]+).*', '$1'
+
+
+            $formHtml = "<form class=""field has-addons"" action=""https://www.google.com/search"" method=""get"" target=""_blank"" style=""float:right;"">"
+            $formHtml += "<div class=""control""><input class=""input is-small mt-1"" type=""text"" name=""q"" placeholder=""Search..."" style=""width:$($Global:SearchBoxWidth)ch;""></div>" # Using 'ch' for character width
+            $formHtml += "<input type=""hidden"" name=""sitesearch"" value=""$siteSearchValue"">" # Google specific
+            # $formHtml += "<input type=""hidden"" name=""as_sitesearch"" value=""$siteSearchValue"">" # Another variant for Google
+            $formHtml += "<div class=""control""><button class=""button is-info is-small mt-1"" type=""submit"">Go</button></div></form>"
+        }
+        "duckduckgo" {
+            $formHtml = "<form class=""field has-addons"" method=""post"" action=""https://duckduckgo.com/"" target=""_blank"" style=""float:right;"">" # DDG often uses POST for site search from external forms
+            $formHtml += "<div class=""control""><input class=""input is-small mt-1"" name=""q"" type=""text"" placeholder=""Search DDG..."" style=""width:$($Global:SearchBoxWidth)ch;""></div>"
+            $formHtml += "<input name=""sites"" type=""hidden"" value=""$($Global:CmsUrl -replace 'https?://', '')"">" # DDG specific 'sites'
+            $formHtml += "<div class=""control""><button class=""button is-info is-small mt-1"" type=""submit"">Go</button></div></form>"
+        }
+        "duckduckgo-official" { # Uses GET and their params
+             $formHtml = "<form class=""field has-addons"" method=""get"" action=""https://duckduckgo.com/"" target=""_blank"" style=""float:right;"">"
+             $formHtml += "<div class=""control""><input class=""input is-small mt-1"" name=""q"" type=""text"" placeholder=""Search DDG..."" style=""width:$($Global:SearchBoxWidth)ch;""></div>"
+             # For DDG, the query 'q' can include site:domain.com or site:domain.com/path
+             # $formHtml += "<input name=""sites"" type=""hidden"" value=""$($Global:CmsUrl -replace 'https?://', '')"">" # Not typically needed if 'site:' is in q
+             $formHtml += "<div class=""control""><button class=""button is-info is-small mt-1"" type=""submit"">Go</button></div></form>"
+             # User would type: my search term site:example.com/news
+        }
+        default {
+            Write-Warning "Search box engine '$($Global:SearchBoxEngine)' is not recognized. No search box will be generated."
+            return ""
+        }
+    }
+    Write-Verbose "Generated search box HTML for engine '$($Global:SearchBoxEngine)'."
+    return $formHtml
+}
+
+function Get-HistoryButtonHtml {
+    [CmdletBinding()] param()
+    Write-Verbose "Generating History button HTML."
+    return "<a class=""$($Global:CssInfoButtonClass)"" href=""$($Global:ButtonHistoryUrl)""><img src=""images0/$($Global:ButtonHistoryIcon)"" width=""24"" height=""24"" title=""$($Global:ButtonHistoryTooltip)"" alt=""$($Global:ButtonHistoryTooltip)""/>&nbsp;$($Global:ButtonHistoryText)</a>" # Removed trailing &nbsp; as it's better handled by CSS margin/padding
+}
+
+function Get-TagsIndexButtonHtml {
+    [CmdletBinding()] param()
+    Write-Verbose "Generating Tags Index button HTML."
+    return "<a class=""$($Global:CssInfoButtonClass)"" href=""$($Global:ButtonTagsindexUrl)""><img src=""images0/$($Global:ButtonTagsindexIcon)"" width=""24"" height=""24"" title=""$($Global:ButtonTagsindexTooltip)"" alt=""$($Global:ButtonTagsindexTooltip)""/>&nbsp;$($Global:ButtonTagsindexText)</a>"
+}
+
+function Get-RssButtonHtml {
+    [CmdletBinding()] param()
+    Write-Verbose "Generating RSS button HTML."
+    return "<a class=""$($Global:CssInfoButtonClass)"" href=""$($Global:ButtonRssUrl)""><img src=""images0/$($Global:ButtonRssIcon)"" width=""24"" height=""24"" title=""$($Global:ButtonRssTooltip)"" alt=""$($Global:ButtonRssTooltip)""/>&nbsp;$($Global:ButtonRssText)</a>"
+}
+
+
+function Get-SpelunkerPageHeaderHtml {
+    [CmdletBinding()]
+    param()
+
+    Write-Verbose "Generating main page header HTML..."
+
+    # --- Bulma Classes (from shellcms_b create_includes) ---
+    $cssStyleContainer = "columns is-multiline is-vcentered"
+    $cssStyleBannerPictureContainer = "column is-narrow is-vcentered ml-3 pb-0"
+    $cssStyleFigureParameters = "image is-128x128" # Or make this configurable if needed
+    $cssStyleBannerTextContainer = "column is-narrow ml-3 pr-0 pb-0"
+    $cssStyleTitleSize = "is-size-2" # For the main <h1> title
+    $cssStyleButtonDiv = "column is-narrow pt-0 spelunker-button-bar" # Added custom class, pt-0 to align better
+
+    # --- Start HTML Construction ---
+    $htmlBuilder = New-Object System.Text.StringBuilder
+
+    # Main container for banner and title
+    [void]$htmlBuilder.Append("<div class=""$cssStyleContainer"">") # Outer columns div
+
+    # Banner Picture Column
+    if (-not [string]::IsNullOrWhiteSpace($Global:BannerPicture)) {
+        [void]$htmlBuilder.Append("  <div class=""$cssStyleBannerPictureContainer"">")
+        [void]$htmlBuilder.Append("    <figure class=""$cssStyleFigureParameters"">")
+        # Path to banner picture needs to be relative to page; "images0/" is for top-level.
+        # This will be adjusted later by Adjust-AssetPaths. For now, assume "images0/"
+        [void]$htmlBuilder.Append("      <img src=""images0/$($Global:BannerPicture)"" alt=""Site Banner"" />")
+        [void]$htmlBuilder.Append("    </figure>")
+        [void]$htmlBuilder.Append("  </div>")
+    }
+
+    # Title and Description Column
+    [void]$htmlBuilder.Append("  <div class=""$cssStyleBannerTextContainer"">")
+    [void]$htmlBuilder.Append("    <h1 class=""title $cssStyleTitleSize""><strong>$($Global:SiteTitle)</strong></h1>")
+    if (-not [string]::IsNullOrWhiteSpace($Global:SiteDescription)) {
+        [void]$htmlBuilder.Append("    <p class=""subtitle"">$($Global:SiteDescription)</p>")
+    }
+    [void]$htmlBuilder.Append("  </div>")
+
+    [void]$htmlBuilder.Append("</div>") # End of outer columns div for banner/title
+
+    # Button Bar Div
+    [void]$htmlBuilder.Append("<div class=""$cssStyleButtonDiv"">") # Using a simple div for buttons now
+
+    # Permanent Buttons (Loop through ButtonPermanent1, 2, 3)
+    foreach ($permButtonKeyConfig in @($Global:ButtonPermanent1, $Global:ButtonPermanent2, $Global:ButtonPermanent3)) {
+        if (-not [string]::IsNullOrWhiteSpace($permButtonKeyConfig)) {
+            $baseVarName = "Global:Button$($permButtonKeyConfig)"
+
+            $buttonText = (Get-Variable -Name ($baseVarName + "Text") -ErrorAction SilentlyContinue).Value
+            $buttonUrl = (Get-Variable -Name ($baseVarName + "Url") -ErrorAction SilentlyContinue).Value
+            $buttonIcon = (Get-Variable -Name ($baseVarName + "Icon") -ErrorAction SilentlyContinue).Value
+            $buttonTooltip = (Get-Variable -Name ($baseVarName + "Tooltip") -ErrorAction SilentlyContinue).Value
+            $buttonClass = $Global:CssPermanentButtonClass
+
+            if ($buttonText -and $buttonUrl -and $buttonIcon) {
+                [void]$htmlBuilder.AppendFormat('  <a class="{0}" href="{1}" title="{2}"><img src="images0/{3}" width="24" height="24" alt="{4}" />&nbsp;{5}</a>',
+                    $buttonClass, $buttonUrl, $buttonTooltip, $buttonIcon, $buttonText, $buttonText
+                )
+            } else {
+                Write-Verbose "Skipping permanent button for key '$permButtonKeyConfig' due to missing configuration details (Text, Url, or Icon)."
+            }
+        }
+    }
+
+    # Placeholders for other buttons (these will be replaced later by other functions)
+    [void]$htmlBuilder.Append("<!--SPELUNKER_SECONDBUTTON-->")
+    [void]$htmlBuilder.Append("<!--SPELUNKER_THIRDBUTTON-->")
+    [void]$htmlBuilder.Append("<!--SPELUNKER_FOURTHBUTTON-->")
+    [void]$htmlBuilder.Append("<!--SPELUNKER_FIFTHBUTTON-->")
+    [void]$htmlBuilder.Append("<!--SPELUNKER_SIXTHBUTTON-->")
+    [void]$htmlBuilder.Append("<!--SPELUNKER_SEVENTHBUTTON-->")
+
+    [void]$htmlBuilder.Append("</div><br />")
+
+    Write-Verbose "Main page header HTML generated."
+    return $htmlBuilder.ToString()
+}
+
+
+# Site Identity (Partially set by -Path, others are defaults or from future config file)
+# $Global:SiteTitle is already set from $Path if specified, or default
+# $Global:SiteAuthor is already set
+$Global:SiteUrl = "http://adevjournal.info" # Example default, ideally from config
+$Global:CmsUrl = "$($Global:SiteUrl)/news"   # Example default, ideally from config
+$Global:SiteDescription = "A static html/css site generator powered by PowerShell" # Default
+
+# Banner Picture
+$Global:BannerPicture = "sit-svgrepo-com.svg" # Default
+
+# Button CSS Styles
+$Global:CssPermanentButtonClass = "button is-primary is-light"
+$Global:CssInfoButtonClass = "button is-info is-light"
+
+# Permanent Buttons Configuration (up to 3, names refer to detailed configs below)
+$Global:ButtonPermanent1 = "sitehome"
+$Global:ButtonPermanent2 = "contact"
+$Global:ButtonPermanent3 = ""
+
+# --- Detailed Button Configurations ---
+# Site Home Button (corresponds to "sitehome")
+$Global:ButtonSitehomeText = "site"
+$Global:ButtonSitehomeUrl = "$($Global:SiteUrl)/" # Absolute URL
+$Global:ButtonSitehomeIcon = "home-svgrepo-com.svg"
+$Global:ButtonSitehomeTooltip = "Website homepage"
+
+# Contact Button (corresponds to "contact")
+$Global:ButtonContactText = "contact"
+$Global:ButtonContactUrl = "http://somewhere.org/contact/" # Example absolute
+$Global:ButtonContactIcon = "comment-svgrepo-com.svg"
+$Global:ButtonContactTooltip = "Send email to site manager"
+
+# Subhome Button / News (corresponds to "subhome" or "news")
+# This button often points to the root of the current CMS instance (e.g., /news/index.html)
+$Global:ButtonSubhomeText = "news"
+$Global:ButtonSubhomeUrl = "index.html" # Relative to CmsUrl/ContentRoot
+$Global:ButtonSubhomeIcon = "book-svgrepo-com.svg"
+$Global:ButtonSubhomeTooltip = "News homepage (current section)"
+
+# History Button (corresponds to "history")
+$Global:ButtonHistoryText = "history"
+$Global:ButtonHistoryUrl = "all_posts.html" # Relative path within ContentRoot
+$Global:ButtonHistoryIcon = "layers-svgrepo-com.svg"
+$Global:ButtonHistoryTooltip = "Posts history"
+
+# Tags Index Button (corresponds to "tagsindex")
+$Global:ButtonTagsindexText = "index"
+$Global:ButtonTagsindexUrl = "all_tags.html" # Relative path within ContentRoot
+$Global:ButtonTagsindexIcon = "paper-bag-svgrepo-com.svg"
+$Global:ButtonTagsindexTooltip = "All categories"
+
+# RSS Button (corresponds to "rss")
+$Global:ButtonRssText = "rss"
+$Global:ButtonRssUrl = "feed.rss" # Relative path within ContentRoot
+$Global:ButtonRssIcon = "activity-svgrepo-com.svg"
+$Global:ButtonRssTooltip = "RSS feed"
+
+# Search Box Configuration
+$Global:SearchBoxPages = "index post tags all_posts all_docs all_tags" # Space-delimited list
+$Global:SearchBoxWidth = "40"
+$Global:SearchBoxEngine = "google" # google, duckduckgo, duckduckgo-official
+
+# Localization strings for links
+$Global:TemplateArchiveIndexPage = "Back to the front page"
+
 
 function Show-SpelunkerHelp {
     <#
@@ -178,13 +507,13 @@ NOTES
 
 # Set your preferred editor here, e.g., "code.exe", "C:\Program Files\Notepad++\notepad++.exe", "subl.exe"
 # If $null, the script will search for common editors.
-$Global:PreferredEditor = $null 
+$Global:PreferredEditor = $null
 $Global:NumberOfIndexArticles = 10 # Default, can be overridden by config file later
 $Global:SiteTitle = "My PowerShell Blog" # Default, can be overridden
 $Global:SiteAuthor = "PowerShell User" # Default, can be overridden
 
 # Initialize global paths based on the -Path parameter (or its default)
-Set-GlobalPathVariables -BaseContentPathFromParam $Path 
+Set-GlobalPathVariables -BaseContentPathFromParam $Path
 
 
 # --- Interactive Mode Logic (TUI for initial command/path) ---
@@ -213,11 +542,11 @@ if ($Global:IsInteractiveMode) {
             [pscustomobject]@{ Name = "edit";    Description = "Open an existing .htmraw file in an editor." }
             [pscustomobject]@{ Name = "rebuild"; Description = "Rebuild all HTML files from .htmraw sources and update all indexes." }
             # Placeholders for future commands:
-            # [pscustomobject]@{ Name = "list";    Description = "List all published posts." } 
+            # [pscustomobject]@{ Name = "list";    Description = "List all published posts." }
             # [pscustomobject]@{ Name = "tags";    Description = "List all tags." }
             [pscustomobject]@{ Name = "exit";    Description = "Exit Spelunker." }
         )
-        
+
         Write-Host "`nPlease select a command to execute:" -ForegroundColor Yellow
         # Attempt Out-GridView first, fallback to Read-Host if it fails (e.g. non-interactive console)
         try {
@@ -256,10 +585,10 @@ Write-Verbose "Executing command: $Command"
 # Placeholder functions
 function Invoke-Rebuild {
     Write-Host "Starting Invoke-Rebuild. ContentRoot: $ContentRoot (Full: $((Resolve-Path $ContentRoot).Path))"
-    
+
     Write-Host "Starting Invoke-Rebuild. ContentRoot: $ContentRoot (Full: $((Resolve-Path $ContentRoot -ErrorAction SilentlyContinue).Path))" # Added SilentlyContinue
     Write-Verbose "Using ContentRoot: $ContentRoot, TemplatesDir: $TemplatesDir"
-    
+
     # Ensure ContentRoot actually exists before trying to Get-ChildItem
     if (-not (Test-Path -Path $ContentRoot -PathType Container)) {
         Write-Error "ContentRoot directory not found: '$ContentRoot'. Please ensure the -Path parameter is correct and the directory exists."
@@ -286,7 +615,7 @@ function Invoke-Rebuild {
         try {
             Write-Verbose "Processing source file: $($sourceFile.FullName)"
             $fullSourcePath = $sourceFile.FullName
-            
+
             $relativePath = $fullSourcePath.Substring($fullContentRootPath.Length)
             if ($relativePath.Length -gt 0 -and -not ($relativePath.StartsWith('/') -or $relativePath.StartsWith('\'))) {
                 $relativePath = [System.IO.Path]::DirectorySeparatorChar + $relativePath
@@ -304,10 +633,10 @@ function Invoke-Rebuild {
             }
 
             $timestamp = (Get-Item $sourceFile.FullName).LastWriteTime
-            
+
             # New-BlogPostHtml handles its own success/error messages
             New-BlogPostHtml -SourceFilePath $sourceFile.FullName -OutputFilePath $outputFilePath -Timestamp $timestamp
-            
+
             # Basic check if HTML was generated
             if (Test-Path $outputFilePath -PathType Leaf) {
                 $generatedHtmlFiles++
@@ -325,11 +654,11 @@ function Invoke-Rebuild {
     Write-Host "Files processed for HTML generation: $processedCount"
     Write-Host "HTML files successfully generated: $generatedHtmlFiles"
     Write-Host "Errors during HTML generation: $errorCount"
-    
+
     Write-Verbose "Starting index updates after processing posts..."
-    Update-MainIndex 
-    Update-AllPostsIndex 
-    Update-TagsIndex 
+    Update-MainIndex
+    Update-AllPostsIndex
+    Update-TagsIndex
     Write-Host "--- Indexing Complete ---"
     Write-Host "Rebuild process finished."
 }
@@ -338,9 +667,9 @@ function Invoke-Rebuild {
 function Invoke-Edit {
     param(
         # Parameter is no longer mandatory here; logic below will handle interactive selection if not provided.
-        [string]$EditFilePathParameter 
+        [string]$EditFilePathParameter
     )
-    
+
     $ResolvedEditPath = $null
 
     if (-not ([string]::IsNullOrWhiteSpace($EditFilePathParameter))) {
@@ -351,7 +680,7 @@ function Invoke-Edit {
             $ResolvedEditPath = Join-Path -Path $Global:ContentRoot -ChildPath $ResolvedEditPath
         }
         try {
-            $ResolvedEditPath = (Resolve-Path -LiteralPath $ResolvedEditPath -ErrorAction Stop).Path 
+            $ResolvedEditPath = (Resolve-Path -LiteralPath $ResolvedEditPath -ErrorAction Stop).Path
             Write-Verbose "Path resolved to: $ResolvedEditPath"
             if (-not (Test-Path -LiteralPath $ResolvedEditPath -PathType Leaf)) {
                 Write-Error "File not found or is not a file at the provided path: $ResolvedEditPath"
@@ -364,8 +693,8 @@ function Invoke-Edit {
     } elseif ($Global:IsInteractiveMode) {
         Write-Verbose "Invoke-Edit started in interactive mode without a pre-defined file path."
         Write-Host "Please select an .htmraw file to edit:" -ForegroundColor Yellow
-        
-        $availableFiles = Get-ChildItem -Path $Global:ContentRoot -Filter *.htmraw -Recurse -File -ErrorAction SilentlyContinue | 
+
+        $availableFiles = Get-ChildItem -Path $Global:ContentRoot -Filter *.htmraw -Recurse -File -ErrorAction SilentlyContinue |
             Select-Object FullName, @{Name="RelativePath"; Expression={$_.FullName.Substring($Global:ContentRoot.Length).TrimStart('\/')}}, Name, LastWriteTime, DirectoryName |
             Sort-Object RelativePath
 
@@ -373,7 +702,7 @@ function Invoke-Edit {
             Write-Warning "No .htmraw files found in '$($Global:ContentRoot)' or its subdirectories."
             return
         }
-        
+
         $selectedFile = $null
         try {
             $selectedFile = $availableFiles | Out-GridView -Title "Select .htmraw File to Edit" -PassThru -ErrorAction Stop
@@ -400,7 +729,7 @@ function Invoke-Edit {
         Write-Error "The 'edit' command requires a file path to be specified via -EditHtmRawPathParameter (or -EditFilePath) when not in interactive mode."
         return
     }
-    
+
     Write-Host "Attempting to edit file: $ResolvedEditPath"
 
     # Editor Launch (common logic for both parameter-provided and interactively selected path)
@@ -409,7 +738,7 @@ function Invoke-Edit {
         Write-Verbose "Attempting to open '$ResolvedEditPath' with editor: $editorCommand"
         try {
             Start-Process -FilePath $editorCommand -ArgumentList $ResolvedEditPath -ErrorAction Stop
-            $editorExeName = ($editorCommand -split '[\\/]')[-1] 
+            $editorExeName = ($editorCommand -split '[\\/]')[-1]
             Write-Host "Launched editor '$editorExeName' for '$ResolvedEditPath'."
         }
         catch {
@@ -442,9 +771,9 @@ function Get-EditorCommand {
 
     # 2. Check Common Editors
     Write-Verbose "Checking common editors."
-    $commonEditors = @("code.exe", "code-insiders.exe", "notepad++.exe", "subl.exe", "atom.exe", "geany.exe", "notepad.exe") 
+    $commonEditors = @("code.exe", "code-insiders.exe", "notepad++.exe", "subl.exe", "atom.exe", "geany.exe", "notepad.exe")
     # Added code-insiders based on common usage.
-    
+
     foreach ($editorName in $commonEditors) {
         Write-Verbose "Checking for editor: $editorName"
         $foundCommand = Get-Command -Name $editorName -ErrorAction SilentlyContinue
@@ -471,7 +800,7 @@ function Update-MainIndex {
         Write-Warning "No .htmraw files found in $ContentRoot. Main index will be empty or reflect no posts."
         # Allow to proceed to generate an empty index if that's the case
     }
-    
+
     $postObjects = @()
     # Resolve path once for all substring operations
     $resolvedFullContentRootPath = (Resolve-Path $ContentRoot -ErrorAction SilentlyContinue).Path
@@ -503,23 +832,23 @@ function Update-MainIndex {
         $timestamp = $htmrawFile.LastWriteTime
         $htmlFilePath = Join-Path -Path (Split-Path -Path $htmrawFile.FullName) -ChildPath ([System.IO.Path]::GetFileNameWithoutExtension($htmrawFile.Name) + ".html")
         Write-Verbose "Source: $($htmrawFile.Name), HTML Link: $htmlLink, Timestamp: $timestamp, Expected HTML Path: $htmlFilePath"
-        
+
         $summary = "Summary not available."
         if (Test-Path $htmlFilePath -PathType Leaf) {
             Write-Verbose "Extracting summary from $htmlFilePath"
-            $htmlFileContent = Get-HtmRawSourceFile -FilePath $htmlFilePath 
+            $htmlFileContent = Get-HtmRawSourceFile -FilePath $htmlFilePath
             if ($htmlFileContent) { # Check if content was actually read
-                $bodyMatch = $htmlFileContent | Select-String -Pattern '(?s)<body>(.*?)</body>' 
-                $postBodyHtml = if ($bodyMatch) { $bodyMatch.Matches[0].Groups[1].Value } else { $htmlFileContent } 
+                $bodyMatch = $htmlFileContent | Select-String -Pattern '(?s)<body>(.*?)</body>'
+                $postBodyHtml = if ($bodyMatch) { $bodyMatch.Matches[0].Groups[1].Value } else { $htmlFileContent }
 
                 if ($postBodyHtml) {
-                    $splitByHr = $postBodyHtml -split '<\s*hr\s*/?\s*>', 2 
+                    $splitByHr = $postBodyHtml -split '<\s*hr\s*/?\s*>', 2
                     $contentBeforeHr = $splitByHr[0]
                     $summaryText = ConvertFrom-HtmlToText -HtmlContent $contentBeforeHr
-                    $summary = if ($summaryText.Length -gt 300) { 
+                    $summary = if ($summaryText.Length -gt 300) {
                         $summaryText.Substring(0, 300).Trim() + "..."
-                    } else { 
-                        $summaryText.Trim() 
+                    } else {
+                        $summaryText.Trim()
                     }
                     Write-Verbose "Summary for $($htmrawFile.Name): '$($summary.Substring(0, [System.Math]::Min($summary.Length, 50)))...'" # Log a snippet
                 }
@@ -529,7 +858,7 @@ function Update-MainIndex {
         } else {
             Write-Warning "Generated HTML file $htmlFilePath not found for summary extraction. Post $($htmrawFile.Name) might not have been generated yet, or path is incorrect."
         }
-        
+
         $postObjects += [PSCustomObject]@{
             Title           = $parsedData.Title
             HtmlRelativePath = $htmlLink
@@ -552,7 +881,7 @@ function Update-MainIndex {
             [void]$indexContentBuilder.AppendLine('<div class="post-entry">')
             [void]$indexContentBuilder.AppendLine("    <h3><a href=""$($post.HtmlRelativePath)"">$($post.Title)</a></h3>")
             [void]$indexContentBuilder.AppendLine("    <p class=""summary"">$($post.Summary)</p>")
-            [void]$indexContentBuilder.AppendLine("    <p class=""date"">$($post.Timestamp.ToString('yyyy-MM-dd HH:mm'))</p>") 
+            [void]$indexContentBuilder.AppendLine("    <p class=""date"">$($post.Timestamp.ToString('yyyy-MM-dd HH:mm'))</p>")
             [void]$indexContentBuilder.AppendLine('</div>')
             [void]$indexContentBuilder.AppendLine('<hr />')
         }
@@ -563,27 +892,57 @@ function Update-MainIndex {
 
     # 4. Construct Full Index Page
     Write-Verbose "Constructing full HTML for $IndexFile."
-    $headerContent = Get-TemplateContent -TemplatePath $HeaderTemplate
-    $footerContent = Get-TemplateContent -TemplatePath $FooterTemplate
-    $beginContent = Get-TemplateContent -TemplatePath $BeginTemplate
-    $endContent = Get-TemplateContent -TemplatePath $EndTemplate
+    # Get template contents
+    $cmsHeaderContent = Get-TemplateContent -TemplatePath $Global:HeaderTemplate # Renamed to avoid clash
+    $cmsFooterContent = Get-TemplateContent -TemplatePath $Global:FooterTemplate # Renamed
+    $cmsBeginContent = Get-TemplateContent -TemplatePath $Global:BeginTemplate   # Renamed
+    $cmsEndContent = Get-TemplateContent -TemplatePath $Global:EndTemplate     # Renamed
 
-    if ($null -eq $headerContent -or $null -eq $footerContent -or $null -eq $beginContent -or $null -eq $endContent) {
-        Write-Error "One or more base template files ($HeaderTemplate, $FooterTemplate, $BeginTemplate, $EndTemplate) could not be read or are empty for index generation. Aborting $IndexFile generation."
+    if ($null -eq $cmsHeaderContent -or $null -eq $cmsFooterContent -or $null -eq $cmsBeginContent -or $null -eq $cmsEndContent) {
+        Write-Error "One or more base template files ($($Global:HeaderTemplate), $($Global:FooterTemplate), $($Global:BeginTemplate), $($Global:EndTemplate)) could not be read or are empty for index generation. Aborting $IndexFile generation."
         return
     }
-    
-    $headerWithTitle = $headerContent -replace '</head>', "<title>$($SiteTitle) - Home</title></head>"
 
+    # Inject specific page title into the <head> from cms_header.txt
+    $headerWithPageTitle = $cmsHeaderContent -replace '</head>', "<title>$($Global:SiteTitle) - Home</title></head>"
+
+    # Get the dynamic Spelunker header (banner, site title, permanent buttons)
+    $baseSpelunkerHeaderHtml = Get-SpelunkerPageHeaderHtml # Base header with placeholders
+
+    # Inject page-specific buttons and search box for Update-MainIndex (index.html)
+    $finalHeaderHtml = $baseSpelunkerHeaderHtml
+
+    # Search Box
+    if ($Global:SearchBoxPages -match "index") { # Check if "index" is in SearchBoxPages
+        $searchBoxHtml = Get-SearchBoxHtml
+        $finalHeaderHtml = $finalHeaderHtml.Replace("<!--SPELUNKER_SEVENTHBUTTON-->", $searchBoxHtml)
+    }
+
+    # Page specific buttons for main index
+    $historyButtonHtml = Get-HistoryButtonHtml
+    $tagsIndexButtonHtml = Get-TagsIndexButtonHtml
+    $rssButtonHtml = Get-RssButtonHtml
+
+    $finalHeaderHtml = $finalHeaderHtml.Replace("<!--SPELUNKER_THIRDBUTTON-->", $historyButtonHtml)
+    $finalHeaderHtml = $finalHeaderHtml.Replace("<!--SPELUNKER_FOURTHBUTTON-->", $tagsIndexButtonHtml)
+    $finalHeaderHtml = $finalHeaderHtml.Replace("<!--SPELUNKER_FIFTHBUTTON-->", $rssButtonHtml)
+
+    # Clear any remaining button placeholders
+    $finalHeaderHtml = $finalHeaderHtml -replace "<!--SPELUNKER_.*?BUTTON-->", ""
+
+    # Assemble the full page
     $fullIndexHtml = New-Object System.Text.StringBuilder
-    [void]$fullIndexHtml.Append($headerWithTitle)
-    [void]$fullIndexHtml.Append($beginContent)
-    [void]$fullIndexHtml.Append($indexContentBuilder.ToString())
-    [void]$fullIndexHtml.Append($endContent)
-    [void]$fullIndexHtml.Append($footerContent)
+    [void]$fullIndexHtml.Append($headerWithPageTitle)       # Content from cms_header.txt (Doctype, html, head with specific title, body tag)
+    [void]$fullIndexHtml.Append($finalHeaderHtml)           # Spelunker's dynamic header, now with page-specific buttons/search
+    [void]$fullIndexHtml.Append($cmsBeginContent)           # Content from cms_begin.txt (e.g., opens main columns/container)
+    [void]$fullIndexHtml.Append($indexContentBuilder.ToString()) # The actual list of post entries for the index
+    [void]$fullIndexHtml.Append($cmsEndContent)             # Content from cms_end.txt (e.g., closes main columns/container)
+    [void]$fullIndexHtml.Append($cmsFooterContent)          # Content from cms_footer.txt (e.g., footer iframe, closing body/html tags)
 
     try {
-        Set-Content -Path $IndexFile -Value $fullIndexHtml.ToString() -Force -ErrorAction Stop
+        $pageDepth = Determine-PageDepth -PagePath $IndexFile -BaseSitePath $Global:ContentRoot
+        $finalHtmlContent = Adjust-AssetPaths -HtmlContentString $fullIndexHtml.ToString() -PageDepth $pageDepth
+        Set-Content -Path $IndexFile -Value $finalHtmlContent -Force -ErrorAction Stop
         Write-Host "Main index page updated: $IndexFile"
     } catch {
         Write-Error "Failed to write main index page to $IndexFile: $($_.Exception.Message)"
@@ -593,7 +952,7 @@ function Update-MainIndex {
 function Invoke-Post {
     param(
         [Parameter(Mandatory=$true)]
-        [string]$PostHtmRawPathParameter 
+        [string]$PostHtmRawPathParameter
     )
     Write-Verbose "Invoke-Post started for parameter: $PostHtmRawPathParameter"
 
@@ -603,7 +962,7 @@ function Invoke-Post {
         Write-Verbose "Provided path '$ResolvedPostHtmRawPath' is relative. Resolving against ContentRoot: $ContentRoot"
         $ResolvedPostHtmRawPath = Join-Path -Path $ContentRoot -ChildPath $ResolvedPostHtmRawPath
     }
-    
+
     # Attempt to get full path, which also helps normalize it
     try {
         # Resolve-Path can error if the path doesn't exist, even parts of it.
@@ -614,7 +973,7 @@ function Invoke-Post {
         } else {
             # Path doesn't exist, construct full path for potential creation
             # GetFullPath can resolve '..' etc. Needs a base if $ResolvedPostHtmRawPath might still be relative
-            $baseForGetFullPath = $PSScriptRoot 
+            $baseForGetFullPath = $PSScriptRoot
             if ([System.IO.Path]::IsPathRooted($ContentRoot)) { $baseForGetFullPath = $ContentRoot }
             elseif(Test-Path (Join-Path $PSScriptRoot $ContentRoot)) { $baseForGetFullPath = (Resolve-Path (Join-Path $PSScriptRoot $ContentRoot)).Path}
 
@@ -630,7 +989,7 @@ function Invoke-Post {
         Write-Error "Error resolving path '$PostHtmRawPathParameter': $($_.Exception.Message)"
         return
     }
-    
+
     Write-Host "Effective post source file target: $ResolvedPostHtmRawPath"
 
     # 2. File Existence Check and Skeleton Copy
@@ -661,7 +1020,7 @@ function Invoke-Post {
             # Interactive Tag Input for new posts
             if ($Global:IsInteractiveMode) { # This if block is for tags
                 Write-Verbose "Interactive mode: Prompting for tags for new post $ResolvedPostHtmRawPath"
-                
+
                 # Gather existing tags to suggest
                 $allTagsFromAllPosts = [System.Collections.Generic.List[string]]::new()
                 $tempAllHtmRawFiles = Get-ChildItem -Path $Global:ContentRoot -Filter *.htmraw -Recurse -ErrorAction SilentlyContinue
@@ -674,14 +1033,14 @@ function Invoke-Post {
                     }
                 }
                 $existingUniqueTags = $allTagsFromAllPosts | Sort-Object -Unique
-                
+
                 $selectedExistingTags = @()
                 if ($existingUniqueTags.Count -gt 0) {
                     Write-Host "`nSelect existing tags (optional). Press OK for selections, Cancel to skip." -ForegroundColor Yellow
                     # Out-GridView can be finicky in some terminals / ISE, but is best effort.
                     try {
                         $selectedExistingTags = $existingUniqueTags | Out-GridView -Title "Select Existing Tags for '$($ResolvedPostHtmRawPath | Split-Path -Leaf)'" -PassThru -ErrorAction Stop
-                        if ($null -eq $selectedExistingTags) { $selectedExistingTags = @() } 
+                        if ($null -eq $selectedExistingTags) { $selectedExistingTags = @() }
                         Write-Verbose "User selected existing tags via Out-GridView: $($selectedExistingTags -join ', ')"
                     } catch {
                          Write-Warning "Out-GridView for existing tag selection failed or was skipped. You can enter all tags manually. Error: $($_.Exception.Message)"
@@ -751,7 +1110,7 @@ function Invoke-Post {
                     # For GUI editors, often they detach, so no need for -PassThru or complex handling
                     Start-Process -FilePath $editorCommand -ArgumentList $ResolvedPostHtmRawPath -ErrorAction Stop
                     # Get just the executable name for the message
-                    $editorExeName = ($editorCommand -split '[\\/]')[-1] 
+                    $editorExeName = ($editorCommand -split '[\\/]')[-1]
                     Write-Host "Launched editor '$editorExeName' for '$ResolvedPostHtmRawPath'."
                 }
                 catch {
@@ -763,7 +1122,7 @@ function Invoke-Post {
                 # This message gives context-specific advice for the Invoke-Post command.
                 Write-Host "No suitable editor found or configured to open '$ResolvedPostHtmRawPath'. Please open it manually to edit."
             }
-            
+
             # --- TUI Prompt for P/E/S for newly created files in interactive mode ---
             if ($Global:IsInteractiveMode -and $newFileCreated) {
                 $userAction = ""
@@ -776,7 +1135,7 @@ function Invoke-Post {
                     )
                     $choices | ForEach-Object { Write-Host ("  [{0}] {1,-15} - {2}" -f $_.Letter, $_.Name, $_.Description) }
                     $actionChoice = Read-Host -Prompt "Enter action (P/E/S)"
-                    
+
                     $userAction = $actionChoice.ToUpper()
 
                     switch ($userAction) {
@@ -820,20 +1179,20 @@ function Invoke-Post {
     Write-Verbose "Output HTML file will be: $OutputFilePath"
 
     # 4. Process the Post
-    $Timestamp = (Get-Item -LiteralPath $ResolvedPostHtmRawPath).LastWriteTime 
+    $Timestamp = (Get-Item -LiteralPath $ResolvedPostHtmRawPath).LastWriteTime
     Write-Verbose "Timestamp for post $ResolvedPostHtmRawPath is $Timestamp"
 
     New-BlogPostHtml -SourceFilePath $ResolvedPostHtmRawPath -OutputFilePath $OutputFilePath -Timestamp $Timestamp
-    
+
     if (-not (Test-Path $OutputFilePath -PathType Leaf)) {
         Write-Warning "HTML file $OutputFilePath was not generated as expected by New-BlogPostHtml. Skipping index updates for this post."
         return
     }
 
     Write-Verbose "Post HTML generation appears successful. Proceeding to update indexes."
-    Update-MainIndex 
-    Update-AllPostsIndex 
-    Update-TagsIndex 
+    Update-MainIndex
+    Update-AllPostsIndex
+    Update-TagsIndex
     Write-Host "Invoke-Post for '$($PostHtmRawPathParameter)' completed."
 }
 
@@ -852,7 +1211,7 @@ function Update-TagsIndex {
         Write-Warning "No .htmraw files found in $ContentRoot. Tag indexes will be empty or reflect no posts."
         # Allow to proceed to generate empty/default tag pages
     }
-    
+
     $resolvedFullContentRootPath = (Resolve-Path $ContentRoot -ErrorAction SilentlyContinue).Path
      if (-not $resolvedFullContentRootPath) {
         Write-Error "Cannot resolve ContentRoot full path: $ContentRoot. Aborting Tags index update."
@@ -877,7 +1236,7 @@ function Update-TagsIndex {
             $relativeHtmRawPath = $relativeHtmRawPath.Substring(1)
         }
         $htmlLink = ($relativeHtmRawPath -replace [regex]::Escape(".htmraw"), ".html") -replace '\\', '/'
-        
+
         $postTimestamp = $htmrawFile.LastWriteTime
 
         foreach ($rawTag in $parsedData.Tags) {
@@ -892,7 +1251,7 @@ function Update-TagsIndex {
             }
             $tagsCollection[$tag].Add([PSCustomObject]@{
                 Title            = $parsedData.Title
-                HtmlRelativePath = $htmlLink 
+                HtmlRelativePath = $htmlLink
                 Timestamp        = $postTimestamp
             })
         }
@@ -905,6 +1264,21 @@ function Update-TagsIndex {
         $tagsCollection[$tagKey] = $tagsCollection[$tagKey] | Sort-Object -Property Timestamp -Descending
     }
 
+    # Get template contents once
+    $cmsHeaderContent = Get-TemplateContent -TemplatePath $Global:HeaderTemplate
+    $cmsFooterContent = Get-TemplateContent -TemplatePath $Global:FooterTemplate
+    $cmsBeginContent = Get-TemplateContent -TemplatePath $Global:BeginTemplate
+    $cmsEndContent = Get-TemplateContent -TemplatePath $Global:EndTemplate
+
+    # Get the dynamic Spelunker header once, if templates are valid
+    $baseSpelunkerHeaderHtml = $null
+    if ($null -ne $cmsHeaderContent -and $null -ne $cmsFooterContent -and $null -ne $cmsBeginContent -and $null -ne $cmsEndContent) {
+        $baseSpelunkerHeaderHtml = Get-SpelunkerPageHeaderHtml # Renamed for clarity
+    } else {
+        Write-Error "One or more base template files ($($Global:HeaderTemplate), etc.) could not be read. Aborting all tag page generation."
+        return # Exit function if essential templates are missing
+    }
+
     # 4. Generate all_tags.html
     Write-Verbose "Generating $AllTagsFile..."
     $allTagsPageBuilder = New-Object System.Text.StringBuilder
@@ -912,7 +1286,7 @@ function Update-TagsIndex {
     [void]$allTagsPageBuilder.AppendLine("<ul>")
 
     if ($tagsCollection.Keys.Count -gt 0) {
-        foreach ($tagKey in ($tagsCollection.Keys | Sort-Object)) { # Sort tags alphabetically for the list
+        foreach ($tagKey in ($tagsCollection.Keys | Sort-Object)) {
             $safeTagFileName = "tag_$($tagKey -replace '[^a-zA-Z0-9_]', '_').html"
             Write-Verbose "Adding tag '$tagKey' to $AllTagsFile, linking to $safeTagFileName"
             [void]$allTagsPageBuilder.AppendLine("<li><a href=""$safeTagFileName"">$tagKey</a> ($($tagsCollection[$tagKey].Count) posts)</li>")
@@ -923,58 +1297,93 @@ function Update-TagsIndex {
     }
     [void]$allTagsPageBuilder.AppendLine("</ul>")
 
-    $headerContent = Get-TemplateContent -TemplatePath $HeaderTemplate
-    $footerContent = Get-TemplateContent -TemplatePath $FooterTemplate
-    $beginContent = Get-TemplateContent -TemplatePath $BeginTemplate
-    $endContent = Get-TemplateContent -TemplatePath $EndTemplate
+    $headerWithPageTitle_AllTags = $cmsHeaderContent -replace '</head>', "<title>$($Global:SiteTitle) - All Tags</title></head>"
 
-    if ($null -eq $headerContent -or $null -eq $footerContent -or $null -eq $beginContent -or $null -eq $endContent) {
-        Write-Error "One or more base template files ($HeaderTemplate, $FooterTemplate, $BeginTemplate, $EndTemplate) could not be read for All Tags page. Aborting $AllTagsFile generation."
-        # Continue to individual tag pages if base templates are fine, but AllTagsFile might be missing.
-    } else {
-        $headerWithSiteTitleAllTags = $headerContent -replace '</head>', "<title>$($SiteTitle) - All Tags</title></head>"
-        $fullAllTagsHtml = "$headerWithSiteTitleAllTags$beginContent$($allTagsPageBuilder.ToString())$endContent$footerContent"
-        try {
-            Set-Content -Path $AllTagsFile -Value $fullAllTagsHtml -Force -ErrorAction Stop
-            Write-Host "All Tags index page updated: $AllTagsFile"
-        } catch {
-            Write-Error "Failed to write All Tags index page to $AllTagsFile: $($_.Exception.Message)"
-        }
+    # Inject search box and buttons for all_tags.html
+    $finalHeader_AllTags = $baseSpelunkerHeaderHtml
+    if ($Global:SearchBoxPages -match "all_tags") {
+        $searchBoxHtml = Get-SearchBoxHtml
+        $finalHeader_AllTags = $finalHeader_AllTags.Replace("<!--SPELUNKER_SEVENTHBUTTON-->", $searchBoxHtml)
+    }
+    # Add RSS button to all_tags.html (example, using FIFTH placeholder)
+    $rssButtonHtml_AllTags = Get-RssButtonHtml
+    $finalHeader_AllTags = $finalHeader_AllTags.Replace("<!--SPELUNKER_FIFTHBUTTON-->", $rssButtonHtml_AllTags)
+    # Clear other placeholders for all_tags.html
+    $finalHeader_AllTags = $finalHeader_AllTags -replace "<!--SPELUNKER_SECONDBUTTON-->", ""
+    $finalHeader_AllTags = $finalHeader_AllTags -replace "<!--SPELUNKER_THIRDBUTTON-->", ""
+    $finalHeader_AllTags = $finalHeader_AllTags -replace "<!--SPELUNKER_FOURTHBUTTON-->", ""
+    $finalHeader_AllTags = $finalHeader_AllTags -replace "<!--SPELUNKER_SIXTHBUTTON-->", ""
+    $finalHeader_AllTags = $finalHeader_AllTags -replace "<!--SPELUNKER_SEVENTHBUTTON-->", "" # If not used by search
+
+    $fullAllTagsHtmlBuilder = New-Object System.Text.StringBuilder
+    [void]$fullAllTagsHtmlBuilder.Append($headerWithPageTitle_AllTags)
+    [void]$fullAllTagsHtmlBuilder.Append($finalHeader_AllTags)
+    [void]$fullAllTagsHtmlBuilder.Append($cmsBeginContent)
+    [void]$fullAllTagsHtmlBuilder.Append($allTagsPageBuilder.ToString())
+    [void]$fullAllTagsHtmlBuilder.Append($cmsEndContent)
+    [void]$fullAllTagsHtmlBuilder.Append($cmsFooterContent)
+
+    try {
+        $pageDepthAllTags = Determine-PageDepth -PagePath $AllTagsFile -BaseSitePath $Global:ContentRoot
+        $finalHtmlAllTags = Adjust-AssetPaths -HtmlContentString $fullAllTagsHtmlBuilder.ToString() -PageDepth $pageDepthAllTags
+        Set-Content -Path $AllTagsFile -Value $finalHtmlAllTags -Force -ErrorAction Stop
+        Write-Host "All Tags index page updated: $AllTagsFile"
+    } catch {
+        Write-Error "Failed to write All Tags index page to $AllTagsFile: $($_.Exception.Message)"
     }
 
     # 5. Generate Individual tag_TAGNAME.html Pages
     Write-Verbose "Generating individual tag pages..."
-    if ($null -eq $headerContent -or $null -eq $footerContent -or $null -eq $beginContent -or $null -eq $endContent) {
-         Write-Warning "Skipping generation of individual tag pages due to missing base templates (problem noted above)."
-    } else {
-        foreach ($tagKey in $tagsCollection.Keys) {
-            $safeTagFileName = "tag_$($tagKey -replace '[^a-zA-Z0-9_]', '_').html"
-            $tagPagePath = Join-Path -Path $ContentRoot -ChildPath $safeTagFileName
-            Write-Verbose "Generating tag page for '$tagKey' at $tagPagePath"
+    foreach ($tagKey in $tagsCollection.Keys) {
+        $safeTagFileName = "tag_$($tagKey -replace '[^a-zA-Z0-9_]', '_').html"
+        $tagPagePath = Join-Path -Path $Global:ContentRoot -ChildPath $safeTagFileName
+        Write-Verbose "Generating tag page for '$tagKey' at $tagPagePath"
 
-            $singleTagPageBuilder = New-Object System.Text.StringBuilder
-            [void]$singleTagPageBuilder.AppendLine("<h1>Posts tagged ""$tagKey""</h1>")
-            [void]$singleTagPageBuilder.AppendLine("<ul>")
+        $singleTagPageBuilder = New-Object System.Text.StringBuilder
+        [void]$singleTagPageBuilder.AppendLine("<h1>Posts tagged ""$tagKey""</h1>")
+        [void]$singleTagPageBuilder.AppendLine("<ul>")
 
-            if ($tagsCollection[$tagKey].Count -gt 0) {
-                 foreach ($post in $tagsCollection[$tagKey]) { # Already sorted
-                    $formattedDate = $post.Timestamp.ToString("dddd, MMMM dd, yyyy")
-                    [void]$singleTagPageBuilder.AppendLine("<li><a href=""$($post.HtmlRelativePath)"">$($post.Title)</a> - $formattedDate</li>")
-                }
-            } else { # Should not happen if tag exists in collection, but defensive
-                [void]$singleTagPageBuilder.AppendLine("<li>No posts found for this tag.</li>")
+        if ($tagsCollection[$tagKey].Count -gt 0) {
+             foreach ($post in $tagsCollection[$tagKey]) { # Already sorted
+                $formattedDate = $post.Timestamp.ToString("dddd, MMMM dd, yyyy")
+                [void]$singleTagPageBuilder.AppendLine("<li><a href=""$($post.HtmlRelativePath)"">$($post.Title)</a> - $formattedDate</li>")
             }
-            [void]$singleTagPageBuilder.AppendLine("</ul>")
-            
-            $headerWithTagTitle = $headerContent -replace '</head>', "<title>$($SiteTitle) - Posts tagged $tagKey</title></head>"
-            $fullSingleTagHtml = "$headerWithTagTitle$beginContent$($singleTagPageBuilder.ToString())$endContent$footerContent"
+        } else {
+            [void]$singleTagPageBuilder.AppendLine("<li>No posts found for this tag.</li>")
+        }
+        [void]$singleTagPageBuilder.AppendLine("</ul>")
 
-            try {
-                Set-Content -Path $tagPagePath -Value $fullSingleTagHtml -Force -ErrorAction Stop
-                Write-Host "Tag page generated: $tagPagePath"
-            } catch {
-                Write-Error "Failed to write tag page to $tagPagePath: $($_.Exception.Message)"
-            }
+        $headerWithTagPageTitle = $cmsHeaderContent -replace '</head>', "<title>Posts tagged '$($tagKey)' - $($Global:SiteTitle)</title></head>"
+
+        # Inject search box for individual tag_*.html pages
+        $finalHeader_SingleTag = $baseSpelunkerHeaderHtml
+        if ($Global:SearchBoxPages -match "tag_page") { # Assuming "tag_page" as type
+            $searchBoxHtml_SingleTag = Get-SearchBoxHtml
+            $finalHeader_SingleTag = $finalHeader_SingleTag.Replace("<!--SPELUNKER_SEVENTHBUTTON-->", $searchBoxHtml_SingleTag)
+        }
+        # Clear all other button placeholders for individual tag pages
+        $finalHeader_SingleTag = $finalHeader_SingleTag -replace "<!--SPELUNKER_SECONDBUTTON-->", ""
+        $finalHeader_SingleTag = $finalHeader_SingleTag -replace "<!--SPELUNKER_THIRDBUTTON-->", ""
+        $finalHeader_SingleTag = $finalHeader_SingleTag -replace "<!--SPELUNKER_FOURTHBUTTON-->", ""
+        $finalHeader_SingleTag = $finalHeader_SingleTag -replace "<!--SPELUNKER_FIFTHBUTTON-->", ""
+        $finalHeader_SingleTag = $finalHeader_SingleTag -replace "<!--SPELUNKER_SIXTHBUTTON-->", ""
+        $finalHeader_SingleTag = $finalHeader_SingleTag -replace "<!--SPELUNKER_SEVENTHBUTTON-->", "" # If not used by search
+
+        $fullSingleTagHtmlBuilder = New-Object System.Text.StringBuilder
+        [void]$fullSingleTagHtmlBuilder.Append($headerWithTagPageTitle)
+        [void]$fullSingleTagHtmlBuilder.Append($finalHeader_SingleTag)
+        [void]$fullSingleTagHtmlBuilder.Append($cmsBeginContent)
+        [void]$fullSingleTagHtmlBuilder.Append($singleTagPageBuilder.ToString())
+        [void]$fullSingleTagHtmlBuilder.Append($cmsEndContent)
+        [void]$fullSingleTagHtmlBuilder.Append($cmsFooterContent)
+
+        try {
+            $pageDepthSingleTag = Determine-PageDepth -PagePath $tagPagePath -BaseSitePath $Global:ContentRoot
+            $finalHtmlSingleTag = Adjust-AssetPaths -HtmlContentString $fullSingleTagHtmlBuilder.ToString() -PageDepth $pageDepthSingleTag
+            Set-Content -Path $tagPagePath -Value $finalHtmlSingleTag -Force -ErrorAction Stop
+            Write-Host "Tag page generated: $tagPagePath"
+        } catch {
+            Write-Error "Failed to write tag page to $tagPagePath: $($_.Exception.Message)"
         }
     }
     Write-Host "Tag index pages update complete."
@@ -992,9 +1401,9 @@ function Update-AllPostsIndex {
         Write-Warning "No .htmraw files found in $ContentRoot. All Posts index will be empty or reflect no posts."
         # Allow to proceed to generate an empty index
     }
-    
+
     $postObjects = @()
-    $resolvedFullContentRootPath = (Resolve-Path $ContentRoot -ErrorAction SilentlyContinue).Path 
+    $resolvedFullContentRootPath = (Resolve-Path $ContentRoot -ErrorAction SilentlyContinue).Path
     if (-not $resolvedFullContentRootPath) {
         Write-Error "Cannot resolve ContentRoot full path: $ContentRoot. Aborting All Posts index update."
         return
@@ -1004,7 +1413,7 @@ function Update-AllPostsIndex {
         Write-Verbose "Processing $($htmrawFile.FullName) for All Posts index."
         if ($htmrawFile.FullName.StartsWith((Resolve-Path $TemplatesDir -ErrorAction SilentlyContinue).Path)) {
             Write-Verbose "Skipping file in TemplatesDir: $($htmrawFile.FullName)"
-            continue 
+            continue
         }
 
         $parsedData = Parse-HtmRawContent -RawContent (Get-HtmRawSourceFile -FilePath $htmrawFile.FullName)
@@ -1018,7 +1427,7 @@ function Update-AllPostsIndex {
             $relativeHtmRawPath = $relativeHtmRawPath.Substring(1)
         }
         $htmlLink = ($relativeHtmRawPath -replace [regex]::Escape(".htmraw"), ".html") -replace '\\', '/'
-        
+
         $postObjects += [PSCustomObject]@{
             Title            = $parsedData.Title
             HtmlRelativePath = $htmlLink
@@ -1041,7 +1450,7 @@ function Update-AllPostsIndex {
         foreach ($post in $sortedPosts) {
             $postGroupHeader = $post.Timestamp.ToString("MMMM yyyy")
             if ($postGroupHeader -ne $currentGroupHeader) {
-                if ($currentGroupHeader -ne "") { 
+                if ($currentGroupHeader -ne "") {
                     [void]$allPostsContentBuilder.AppendLine("</ul>")
                 }
                 $currentGroupHeader = $postGroupHeader
@@ -1051,7 +1460,7 @@ function Update-AllPostsIndex {
             $formattedDate = $post.Timestamp.ToString("dddd, MMMM dd, yyyy")
             [void]$allPostsContentBuilder.AppendLine("<li><a href=""$($post.HtmlRelativePath)"">$($post.Title)</a> - $formattedDate</li>")
         }
-        [void]$allPostsContentBuilder.AppendLine("</ul>") 
+        [void]$allPostsContentBuilder.AppendLine("</ul>")
     } else {
         Write-Verbose "No posts to list on All Posts page."
         [void]$allPostsContentBuilder.AppendLine("<p>No posts found.</p>")
@@ -1059,27 +1468,51 @@ function Update-AllPostsIndex {
 
     # 4. Construct Full All Posts Page
     Write-Verbose "Constructing full HTML for $AllPostsFile."
-    $headerContent = Get-TemplateContent -TemplatePath $HeaderTemplate
-    $footerContent = Get-TemplateContent -TemplatePath $FooterTemplate
-    $beginContent = Get-TemplateContent -TemplatePath $BeginTemplate
-    $endContent = Get-TemplateContent -TemplatePath $EndTemplate
+    $cmsHeaderContent = Get-TemplateContent -TemplatePath $Global:HeaderTemplate
+    $cmsFooterContent = Get-TemplateContent -TemplatePath $Global:FooterTemplate
+    $cmsBeginContent = Get-TemplateContent -TemplatePath $Global:BeginTemplate
+    $cmsEndContent = Get-TemplateContent -TemplatePath $Global:EndTemplate
 
-    if ($null -eq $headerContent -or $null -eq $footerContent -or $null -eq $beginContent -or $null -eq $endContent) {
-        Write-Error "One or more base template files ($HeaderTemplate, $FooterTemplate, $BeginTemplate, $EndTemplate) could not be read or are empty for All Posts index generation. Aborting $AllPostsFile generation."
-        return
+    if ($null -eq $cmsHeaderContent -or $null -eq $cmsFooterContent -or $null -eq $cmsBeginContent -or $null -eq $cmsEndContent) {
+        Write-Error "One or more base template files ($($Global:HeaderTemplate), $($Global:FooterTemplate), $($Global:BeginTemplate), $($Global:EndTemplate)) could not be read or are empty for All Posts index generation. Aborting $AllPostsFile generation."
+        return # Was: Aborting $AllPostsFile generation. return
     }
-    
-    $headerWithTitle = $headerContent -replace '</head>', "<title>$($SiteTitle) - All Posts</title></head>"
 
-    $fullAllPostsHtml = New-Object System.Text.StringBuilder
-    [void]$fullAllPostsHtml.Append($headerWithTitle)
-    [void]$fullAllPostsHtml.Append($beginContent)
-    [void]$fullAllPostsHtml.Append($allPostsContentBuilder.ToString())
-    [void]$fullAllPostsHtml.Append($endContent)
-    [void]$fullAllPostsHtml.Append($footerContent)
+    $headerWithPageTitle = $cmsHeaderContent -replace '</head>', "<title>$($Global:SiteTitle) - All Posts</title></head>"
+
+    $baseSpelunkerHeaderHtml = Get-SpelunkerPageHeaderHtml
+
+    # Inject Search Box and specific buttons for Update-AllPostsIndex (all_posts.html)
+    $finalHeaderHtml = $baseSpelunkerHeaderHtml
+    if ($Global:SearchBoxPages -match "all_posts") {
+        $searchBoxHtml = Get-SearchBoxHtml
+        $finalHeaderHtml = $finalHeaderHtml.Replace("<!--SPELUNKER_SEVENTHBUTTON-->", $searchBoxHtml)
+    }
+    # Potentially add RSS button to all_posts page
+    $rssButtonHtml = Get-RssButtonHtml
+    $finalHeaderHtml = $finalHeaderHtml.Replace("<!--SPELUNKER_FIFTHBUTTON-->", $rssButtonHtml) # Assuming FIFTH is a good spot
+
+    # Clear any remaining/other button placeholders
+    $finalHeaderHtml = $finalHeaderHtml -replace "<!--SPELUNKER_SECONDBUTTON-->", ""
+    $finalHeaderHtml = $finalHeaderHtml -replace "<!--SPELUNKER_THIRDBUTTON-->", ""
+    $finalHeaderHtml = $finalHeaderHtml -replace "<!--SPELUNKER_FOURTHBUTTON-->", ""
+    # $finalHeaderHtml = $finalHeaderHtml -replace "<!--SPELUNKER_FIFTHBUTTON-->", "" # Already used or cleared
+    $finalHeaderHtml = $finalHeaderHtml -replace "<!--SPELUNKER_SIXTHBUTTON-->", ""
+    $finalHeaderHtml = $finalHeaderHtml -replace "<!--SPELUNKER_SEVENTHBUTTON-->", "" # Clear if not used by search
+
+
+    $fullAllPostsHtmlBuilder = New-Object System.Text.StringBuilder
+    [void]$fullAllPostsHtmlBuilder.Append($headerWithPageTitle)
+    [void]$fullAllPostsHtmlBuilder.Append($finalHeaderHtml)      # Header with injected content
+    [void]$fullAllPostsHtmlBuilder.Append($cmsBeginContent)
+    [void]$fullAllPostsHtmlBuilder.Append($allPostsContentBuilder.ToString()) # Actual list of posts
+    [void]$fullAllPostsHtmlBuilder.Append($cmsEndContent)
+    [void]$fullAllPostsHtmlBuilder.Append($cmsFooterContent)
 
     try {
-        Set-Content -Path $AllPostsFile -Value $fullAllPostsHtml.ToString() -Force -ErrorAction Stop
+        $pageDepth = Determine-PageDepth -PagePath $AllPostsFile -BaseSitePath $Global:ContentRoot
+        $finalHtmlContent = Adjust-AssetPaths -HtmlContentString $fullAllPostsHtmlBuilder.ToString() -PageDepth $pageDepth
+        Set-Content -Path $AllPostsFile -Value $finalHtmlContent -Force -ErrorAction Stop
         Write-Host "All Posts index page updated: $AllPostsFile"
     } catch {
         Write-Error "Failed to write All Posts index page to $AllPostsFile: $($_.Exception.Message)"
@@ -1111,7 +1544,7 @@ function New-BlogPostHtml {
     $RawContent = Get-HtmRawSourceFile -FilePath $SourceFilePath
     if ($null -eq $RawContent) { # Check for $null specifically
         Write-Error "Failed to read source file '$SourceFilePath' or file is empty for New-BlogPostHtml. Aborting this post."
-        return 
+        return
     }
     Write-Verbose "Successfully read source file $SourceFilePath."
 
@@ -1133,13 +1566,33 @@ function New-BlogPostHtml {
     # Inject title into header
     # A simple approach: replace </head> with <title>$Title</title></head>
     # This assumes </head> exists and is unique enough for this simple replacement.
-    $HeaderWithTitle = $HeaderContent -replace '</head>', "<title>$($ParsedContent.Title)</title></head>"
+    $pageTitleForHead = if (-not [string]::IsNullOrWhiteSpace($ParsedContent.Title)) { $ParsedContent.Title } else { "Untitled Post" }
+    $HeaderWithPageTitle = $HeaderContent -replace '</head>', "<title>$($pageTitleForHead) - $($Global:SiteTitle)</title></head>"
+
+    $baseSpelunkerHeaderHtml = Get-SpelunkerPageHeaderHtml # Base header with placeholders
+
+    # Inject Search Box for New-BlogPostHtml (post pages)
+    $finalHeaderHtml = $baseSpelunkerHeaderHtml
+    if ($Global:SearchBoxPages -match "post") { # Check if "post" is in SearchBoxPages
+        $searchBoxHtml = Get-SearchBoxHtml
+        $finalHeaderHtml = $finalHeaderHtml.Replace("<!--SPELUNKER_SEVENTHBUTTON-->", $searchBoxHtml)
+    }
+    # Clear all other page-specific button placeholders for posts
+    $finalHeaderHtml = $finalHeaderHtml -replace "<!--SPELUNKER_SECONDBUTTON-->", "" # Second button often for subhome, not on post page
+    $finalHeaderHtml = $finalHeaderHtml -replace "<!--SPELUNKER_THIRDBUTTON-->", ""
+    $finalHeaderHtml = $finalHeaderHtml -replace "<!--SPELUNKER_FOURTHBUTTON-->", ""
+    $finalHeaderHtml = $finalHeaderHtml -replace "<!--SPELUNKER_FIFTHBUTTON-->", ""
+    $finalHeaderHtml = $finalHeaderHtml -replace "<!--SPELUNKER_SIXTHBUTTON-->", ""
+    # Also clear seventh if search box was not injected
+    $finalHeaderHtml = $finalHeaderHtml -replace "<!--SPELUNKER_SEVENTHBUTTON-->", ""
+
 
     # Construct HTML
     $HtmlBuilder = New-Object System.Text.StringBuilder
-    [void]$HtmlBuilder.Append($HeaderWithTitle)
-    [void]$HtmlBuilder.Append($BeginContent)
-    [void]$HtmlBuilder.Append($ParsedContent.Body)
+    [void]$HtmlBuilder.Append($HeaderWithPageTitle) # This is from cms_header.txt, includes <html>, <head> with specific title, <body> tag
+    [void]$HtmlBuilder.Append($finalHeaderHtml)     # Spelunker's dynamic header, now with search box (if applicable) & cleared placeholders
+    [void]$HtmlBuilder.Append($BeginContent)        # This is from cms_begin.txt, typically opens main content columns
+    [void]$HtmlBuilder.Append($ParsedContent.Body)  # The actual post body
 
     # Add tags if any
     if ($ParsedContent.Tags.Count -gt 0) {
@@ -1151,7 +1604,9 @@ function New-BlogPostHtml {
     [void]$HtmlBuilder.Append($FooterContent)
 
     try {
-        Set-Content -Path $OutputFilePath -Value $HtmlBuilder.ToString() -Force -ErrorAction Stop
+        $pageDepth = Determine-PageDepth -PagePath $OutputFilePath -BaseSitePath $Global:ContentRoot
+        $finalHtmlContent = Adjust-AssetPaths -HtmlContentString $HtmlBuilder.ToString() -PageDepth $pageDepth
+        Set-Content -Path $OutputFilePath -Value $finalHtmlContent -Force -ErrorAction Stop
         Write-Host "Successfully generated $OutputFilePath (Timestamp: $Timestamp)"
     } catch {
         Write-Error "Failed to write HTML to $OutputFilePath: $($_.Exception.Message)" # More specific error
@@ -1270,7 +1725,7 @@ switch ($Command) {
         if ($PSBoundParameters.ContainsKey('EditHtmRawPathParameter')) {
             $filePathToEdit = $EditHtmRawPathParameter
         } elseif ($PSBoundParameters.ContainsKey('EditFilePath')) { # Alias for EditHtmRawPathParameter
-            $filePathToEdit = $EditFilePath 
+            $filePathToEdit = $EditFilePath
         }
         # Invoke-Edit will handle interactive prompting if $filePathToEdit is $null and mode is interactive.
         # It will also handle erroring out if $filePathToEdit is $null and not interactive.

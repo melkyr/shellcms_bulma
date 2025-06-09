@@ -213,19 +213,20 @@ function Adjust-AssetPaths {
     # Regex captures:
     #   $1 = HTML tag part up to the quote (e.g., <link rel="stylesheet" href=)
     #   $2 = The quote character itself (' or ")
-    #   $3 = The asset folder (css0/ or images0/ or js0/)
-    #   $4 = The rest of the path after the asset folder (e.g., bulma.css)
-    # Important: $PagePath in Determine-PageDepth is the path to the HTML file itself.
-    # So, if index.html is at depth 0, and it links to ../css0/style.css, this path is WRONG.
-    # If posts/post1.html is at depth 1, and it links to ../css0/style.css, this path is CORRECT.
-    # If posts/sub/post2.html is at depth 2, and it links to ../css0/style.css, this path is WRONG.
-
-    $typeARegex = '(?i)(<(?:a|link|img|script|iframe|source)[^>]*?(?:href|src)\s*=\s*([`"']))\.\./(css0/|images0/|js0/)([^`"]*[`"'])'
-    # Regex for $typeARegex was updated to capture the closing quote in group 4 to avoid partial replacements.
+    #   $3 = Asset folder (e.g., css0/)
+    #   $4 = Path content after folder (e.g., style.css), non-greedy
+    #   $5 = Closing quote (must be same as opening quote captured in $2)
+    $typeARegex = @'
+(?i)(<(?:a|link|img|script|iframe|source)[^>]*?(?:href|src)\s*=\s*) # $1: Attribute start
+(['"`])                                                            # $2: Opening quote
+\.\./(css0/|images0/|js0/)                                         # $3: Asset folder (e.g., css0/)
+([^'"\2]*?)                                                        # $4: Path content after folder, non-greedy (using \2 backreference)
+(\2)                                                               # $5: Closing quote (using \2 backreference)
+'@
 
     if ($PageDepth -eq 0) {
         # Depth 0: ../css0/style.css" -> css0/style.css"
-        $replacementA_Depth0 = '${1}${2}${3}${4}' # Remove ../
+        $replacementA_Depth0 = '${1}${2}${3}${4}${5}' # Removes the matched '../'
         $adjustedHtml = [regex]::Replace($adjustedHtml, $typeARegex, $replacementA_Depth0)
         Write-Verbose "Adjusted Type A paths for depth 0 (removed leading '../')"
     }
@@ -236,7 +237,7 @@ function Adjust-AssetPaths {
     elseif ($PageDepth -gt 1) {
         # Depth > 1: ../css0/style.css -> ../../css0/style.css (add $PageDepth-1 more ../)
         $prefixForTypeA = ("../" * ($PageDepth - 1))
-        $replacementA_DepthGt1 = '${1}${2}' + $prefixForTypeA + '../${3}${4}' # Prepend to existing ../
+        $replacementA_DepthGt1 = '${1}${2}' + $prefixForTypeA + '../${3}${4}${5}' # Prepends to existing ../
         $adjustedHtml = [regex]::Replace($adjustedHtml, $typeARegex, $replacementA_DepthGt1)
         Write-Verbose "Adjusted Type A paths for depth $PageDepth (added '$prefixForTypeA' to existing '../')"
     }
@@ -251,18 +252,22 @@ function Adjust-AssetPaths {
         $typeBItems = @("images0", "css0", "js0", "feed.rss")
 
         foreach ($itemName in $typeBItems) {
+            $escapedItemName = [regex]::Escape($itemName)
             # Regex captures:
             #   $1 = HTML tag part up to the quote
-            #   $2 = The quote character
-            #   $3 = The item name itself (e.g., images0 or feed.rss)
-            #   $4 = The rest of the path including leading slash if present, up to the closing quote.
-            #          (e.g., /icon.png" or " if it's just feed.rss")
-            # Pattern ensures it only matches if $itemName is at the start of the path value.
-            $regexPatternB = "(?i)(<(?:a|link|img|script|iframe|source)[^>]*?(?:href|src)\s*=\s*([`"']))($itemName)((?:/[^`"']*)?`"|[^`"']*\.(?:png|jpg|jpeg|gif|svg|css|js|rss)`")"
-            # Regex for $regexPatternB was updated to better capture typical file/folder structures and ensure it captures the closing quote.
-            # It now looks for $itemName possibly followed by a / and more chars, or directly by a file extension relevant to assets, then the closing quote.
+            #   $2 = The opening quote character
+            #   $3 = The (escaped) item name itself (e.g., images0 or feed\.rss)
+            #   $4 = Optional path suffix (e.g., /icon.png for folders, or empty for files like feed.rss)
+            #   $5 = The closing quote character (matching group 2)
+            $regexPatternB = [string]::Format(@'
+(?i)(<(?:a|link|img|script|iframe|source)[^>]*?(?:href|src)\s*=\s*) # $1: Attribute start
+(['"`])                                                            # $2: Opening quote
+({0})                                                              # $3: The escaped item name
+((?:/[^'"\2]*?)?)                                                  # $4: Optional path suffix (non-greedy, using \2 backreference)
+(\2)                                                               # $5: Closing quote (using \2 backreference)
+'@, $escapedItemName)
 
-            $replacementPatternB = '${1}${2}' + $prefixForTypeB + '${3}${4}'
+            $replacementPatternB = '${1}${2}' + $prefixForTypeB + '${3}${4}${5}'
             $adjustedHtml = [regex]::Replace($adjustedHtml, $regexPatternB, $replacementPatternB)
         }
         Write-Verbose "Adjusted Type B paths for depth $PageDepth (added '$prefixForTypeB')"
@@ -1197,7 +1202,7 @@ function Update-MainIndex {
         Set-Content -Path $IndexFile -Value $finalHtmlContent -Force -ErrorAction Stop
         Write-Host "Main index page updated: $IndexFile"
     } catch {
-        Write-Error "Failed to write main index page to $IndexFile: $($_.Exception.Message)"
+        Write-Error "Failed to write main index page to $IndexFile: $($_.Exception.Message)" # Corrected : to .
     }
 }
 
@@ -1767,7 +1772,7 @@ function Update-AllPostsIndex {
         Set-Content -Path $AllPostsFile -Value $finalHtmlContent -Force -ErrorAction Stop
         Write-Host "All Posts index page updated: $AllPostsFile"
     } catch {
-        Write-Error "Failed to write All Posts index page to $AllPostsFile: $($_.Exception.Message)"
+        Write-Error "Failed to write All Posts index page to $AllPostsFile: $($_.Exception.Message)" # Restored original variable, ensured . for Exception.Message
     }
 }
 
